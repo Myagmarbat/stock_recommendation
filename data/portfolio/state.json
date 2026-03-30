@@ -1,22 +1,36 @@
 {
-  "initial_capital": 11000.0,
-  "cash": 4400.1607,
-  "equity": 10958.4312,
-  "run_count": 26,
+  "capital_balance": 10000.0,
+  "cash": 0.0,
+  "simulation_balance": 10030.5535,
+  "run_count": 2,
   "open_positions": [
+    {
+      "id": "EQT_STOCK_1",
+      "symbol": "EQT",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 2000.0,
+      "entry_underlying_price": 64.2267,
+      "stop_price": 61.2366,
+      "target_price": 69.2103,
+      "opened_run": 1,
+      "hold_runs": 1,
+      "entry_score": 0.7065
+    },
     {
       "id": "XOM_STOCK_1",
       "symbol": "XOM",
       "instrument": "STOCK",
       "direction": "LONG",
       "leverage": 1.0,
-      "capital_allocated": 1320.0,
-      "entry_underlying_price": 173.8818,
-      "stop_price": 168.6999,
-      "target_price": 182.5182,
+      "capital_allocated": 2000.0,
+      "entry_underlying_price": 170.9656,
+      "stop_price": 165.7837,
+      "target_price": 179.602,
       "opened_run": 1,
-      "hold_runs": 25,
-      "entry_score": 0.8021
+      "hold_runs": 1,
+      "entry_score": 0.6354
     },
     {
       "id": "CVX_STOCK_1",
@@ -24,13 +38,13 @@
       "instrument": "STOCK",
       "direction": "LONG",
       "leverage": 1.0,
-      "capital_allocated": 1320.0,
-      "entry_underlying_price": 212.8595,
-      "stop_price": 207.5718,
-      "target_price": 221.6724,
+      "capital_allocated": 2000.0,
+      "entry_underlying_price": 210.1078,
+      "stop_price": 204.7465,
+      "target_price": 219.0433,
       "opened_run": 1,
-      "hold_runs": 25,
-      "entry_score": 0.7262
+      "hold_runs": 1,
+      "entry_score": 0.5847
     },
     {
       "id": "VZ_STOCK_1",
@@ -38,13 +52,13 @@
       "instrument": "STOCK",
       "direction": "LONG",
       "leverage": 1.0,
-      "capital_allocated": 1320.0,
-      "entry_underlying_price": 50.2538,
-      "stop_price": 49.0705,
-      "target_price": 52.2259,
+      "capital_allocated": 2000.0,
+      "entry_underlying_price": 50.1391,
+      "stop_price": 48.9464,
+      "target_price": 52.127,
       "opened_run": 1,
-      "hold_runs": 25,
-      "entry_score": 0.4172
+      "hold_runs": 1,
+      "entry_score": 0.3327
     },
     {
       "id": "T_STOCK_1",
@@ -52,29 +66,17 @@
       "instrument": "STOCK",
       "direction": "LONG",
       "leverage": 1.0,
-      "capital_allocated": 1320.0,
-      "entry_underlying_price": 28.9579,
-      "stop_price": 28.2321,
-      "target_price": 30.1675,
+      "capital_allocated": 2000.0,
+      "entry_underlying_price": 28.7036,
+      "stop_price": 27.9654,
+      "target_price": 29.934,
       "opened_run": 1,
-      "hold_runs": 25,
-      "entry_score": 0.391
-    },
-    {
-      "id": "WMT_STOCK_8",
-      "symbol": "WMT",
-      "instrument": "STOCK",
-      "direction": "LONG",
-      "leverage": 1.0,
-      "capital_allocated": 1319.8393,
-      "entry_underlying_price": 123.8274,
-      "stop_price": 120.7391,
-      "target_price": 128.9745,
-      "opened_run": 8,
-      "hold_runs": 18,
-      "entry_score": 0.2683
+      "hold_runs": 1,
+      "entry_score": 0.3033
     }
   ],
   "closed_positions_count": 0,
-  "last_updated_utc": "20260330_200225"
+  "last_updated_utc": "20260330_230231",
+  "initial_capital": 10000.0,
+  "equity": 10030.5535
 }

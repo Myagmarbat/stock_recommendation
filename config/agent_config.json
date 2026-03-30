@@ -2,7 +2,11 @@
   "trading": {
     "stock_only": true,
     "real_trading_capital": 10000,
-    "simulation_initial_capital": 10000
+    "simulation_initial_capital": 10000,
+    "include_downtrend_symbols": true,
+    "downtrend_symbol_ratio": 0.4,
+    "full_budget_deploy": true,
+    "full_deploy_target_pct": 1.0
   },
   "notifications": {
     "enabled": true,
@@ -23,6 +27,17 @@
     "normalization_divisor": 2.5,
     "min_headline_count": 5,
     "max_headlines_scored": 40,
+    "max_headlines_per_source": 4,
+    "tier_multipliers": {
+      "core": 1.0,
+      "secondary": 0.8,
+      "speculative": 0.45
+    },
+    "tier_limits": {
+      "core": 24,
+      "secondary": 12,
+      "speculative": 6
+    },
     "source_weights": {
       "reuters": 1.35,
       "bloomberg": 1.35,
@@ -35,7 +50,10 @@
       "yahoo finance": 1.05,
       "seeking alpha": 1.0,
       "benzinga": 0.95,
-      "motley fool": 0.8
+      "motley fool": 0.8,
+      "sec": 1.4,
+      "federal reserve": 1.2,
+      "reddit": 0.45
     }
   }
 }

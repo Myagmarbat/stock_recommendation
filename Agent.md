@@ -1,11 +1,11 @@
 # Agent.md
 
 ## Objective
-Run a Yahoo Finance driven scanner every 10 minutes, analyze top 50 symbols, and output top 10 weekly opportunity picks for stocks/options with buy/sell direction and trade levels.
-Track virtual portfolio growth/decline from initial capital `$10,000` on every run, and show simulation budget changes based on recommendations.
+Run a Yahoo Finance driven scanner every 30 minutes, analyze top 50 symbols, and output top 10 weekly opportunity picks for stocks/options with buy/sell direction and trade levels.
+Track virtual portfolio growth/decline from fixed `capital_balance` `$10,000` while `simulation_balance` updates on every run.
 
 ## Run Format
-- Universe source: Yahoo predefined screener `day_gainers`, top 50 symbols.
+- Universe source: Yahoo predefined screeners `day_gainers` + `day_losers`, top 50 symbols (default 60/40 mix).
 - On-demand symbol mode: `--symbol <TICKER>` produces a single-stock summary snapshot.
 - Analysis layers:
   1. Fundamental score
@@ -63,7 +63,7 @@ Track virtual portfolio growth/decline from initial capital `$10,000` on every r
 
 ## Automation
 - Runner: `scripts/run_agent.sh`
-- Install background schedule (10 min): `scripts/install_launchd.sh`
+- Install background schedule (30 min): `scripts/install_launchd.sh`
 - Remove schedule: `scripts/uninstall_launchd.sh`
 - Default schedule: weekdays, regular US market session only (`06:30–13:00 PT` / `09:30–16:00 ET`)
 - No automatic after-hours/weekend runs; run manually off-hours if needed.
@@ -79,11 +79,13 @@ Track virtual portfolio growth/decline from initial capital `$10,000` on every r
 - Unified runtime config is stored in `config/agent_config.json` (news + notifications + trading).
 - `trading.real_trading_capital` is fixed capital used for quantity recommendations.
 - `trading.simulation_initial_capital` is first-run simulation baseline; simulation then rolls each run.
+- `trading.full_budget_deploy` + `trading.full_deploy_target_pct` enable aggressive full-cash deployment (up to target % of simulation balance).
+- Portfolio state uses `capital_balance` (fixed benchmark) and `simulation_balance` (live simulated equity).
 - News score stays neutral if headline coverage is below minimum threshold.
 - Engine performs post-analysis each run on the previous top picks and updates model weights/thresholds in `data/model/model_params.json`.
-- Learning contract: if recommendations from ~10 minutes ago are incorrect, apply that error immediately to update model logic for the next run.
+- Learning contract: if recommendations from the previous run are incorrect, apply that error immediately to update model logic for the next run.
 - Latest post-analysis summary is written to `data/latest/post_analysis.json` and historical records to `data/history/post_analysis_history.jsonl`.
-- End-of-day summary contract: once per trading day (weekdays, after 16:00 ET), generate a day-level report with run count, P/L, win-rate snapshot, and improvement suggestions.
+- End-of-day summary contract: once per trading day (weekdays, after 16:00 ET), generate a day-level report with run count, P/L, win-rate snapshot, and specific automated next-day improvements.
 - Market-hours context is included each run (`market_open`, `market_session`, `next_open_et`, `next_close_et`).
 - When market is closed, analysis and post-analysis use regular-session close price as the reference.
 - After-hours processing is disabled by default and can be enabled explicitly with `--enable-after-hours` (or `ENABLE_AFTER_HOURS=1` in runner).

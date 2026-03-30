@@ -18,4 +18,6 @@
 - Entries/exits were managed via target/stop/max-hold policy.
 
 ## Improvements
-1. Few/zero closed trades today; review hold-time and exit calibration.
+1. Tomorrow (2026-03-31 ET): keep risk at 0.75% per trade, but only open new positions when score and market regime agree.
+2. Tomorrow (2026-03-31 ET): shorten time-in-trade review cadence and force an end-of-day exit check at 15:50 ET for stale positions.
+3. Tomorrow (2026-03-31 ET): reduce too-fresh evaluations by delaying evaluation checks and prioritizing mature prior runs.

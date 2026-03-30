@@ -1,0 +1,15 @@
+{
+  "timestamp_utc": "20260330_225028",
+  "status": "stale_snapshot",
+  "error": "No analyzable symbols were returned. Try again later.",
+  "market_open": false,
+  "market_session": "after_hours",
+  "next_open_et": "2026-03-31 09:30:00 EDT",
+  "next_close_et": "2026-03-31 16:00:00 EDT",
+  "model_params_file": "data/model/model_params.json",
+  "model_meta": {
+    "last_updated_utc": "2026-03-30T22:48:30Z",
+    "updates_applied": 3,
+    "last_evaluated_run_id": "20260330_200225"
+  }
+}

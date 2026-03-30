@@ -108,6 +108,9 @@ DEFAULT_SOURCE_WEIGHTS = {
     "seeking alpha": 1.0,
     "benzinga": 0.95,
     "motley fool": 0.8,
+    "sec": 1.4,
+    "federal reserve": 1.2,
+    "reddit": 0.45,
 }
 
 DEFAULT_NEWS_CONFIG = {
@@ -119,6 +122,17 @@ DEFAULT_NEWS_CONFIG = {
     "normalization_divisor": 2.5,
     "min_headline_count": 5,
     "max_headlines_scored": 40,
+    "max_headlines_per_source": 4,
+    "tier_multipliers": {
+        "core": 1.0,
+        "secondary": 0.8,
+        "speculative": 0.45,
+    },
+    "tier_limits": {
+        "core": 24,
+        "secondary": 12,
+        "speculative": 6,
+    },
     "source_weights": DEFAULT_SOURCE_WEIGHTS,
 }
 
@@ -234,6 +248,10 @@ DEFAULT_TRADING_CONFIG = {
     "stock_only": True,
     "real_trading_capital": 10000.0,
     "simulation_initial_capital": 10000.0,
+    "include_downtrend_symbols": True,
+    "downtrend_symbol_ratio": 0.4,
+    "full_budget_deploy": False,
+    "full_deploy_target_pct": 1.0,
 }
 
 DEFAULT_AGENT_CONFIG = {
@@ -664,7 +682,7 @@ def save_post_analysis(base_dir: Path, summary: dict[str, Any]) -> None:
         f.write(json.dumps(payload) + "\n")
 
 
-def fetch_top_gainers(count: int = 50) -> list[str]:
+def fetch_screener_symbols(scr_id: str, count: int = 50) -> list[str]:
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -674,7 +692,7 @@ def fetch_top_gainers(count: int = 50) -> list[str]:
     }
     params = {
         "formatted": "false",
-        "scrIds": "day_gainers",
+        "scrIds": scr_id,
         "count": str(count),
         "start": "0",
     }
@@ -696,11 +714,25 @@ def fetch_top_gainers(count: int = 50) -> list[str]:
                         out.append(sym.upper())
                 out = filter_equity_symbols(out)
                 if out:
-                    return merge_with_fallback(out, count)
+                    return out[:count]
             except Exception:
                 time.sleep(1 + random.random())
 
+    return []
+
+
+def fetch_top_gainers(count: int = 50) -> list[str]:
+    out = fetch_screener_symbols("day_gainers", count)
+    if out:
+        return merge_with_fallback(out, count)
     try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        }
         page = requests.get(YAHOO_GAINERS_PAGE, headers=headers, timeout=20)
         page.raise_for_status()
         html = page.text
@@ -714,6 +746,22 @@ def fetch_top_gainers(count: int = 50) -> list[str]:
         pass
 
     return fallback_top_movers(count)
+
+
+def fetch_market_movers(count: int = 50, include_downtrend: bool = True, downtrend_ratio: float = 0.4) -> list[str]:
+    if not include_downtrend:
+        return fetch_top_gainers(count)
+
+    ratio = clamp(safe_float(downtrend_ratio, 0.4), 0.2, 0.8)
+    losers_n = max(1, int(round(count * ratio)))
+    gainers_n = max(1, count - losers_n)
+
+    gainers = fetch_screener_symbols("day_gainers", gainers_n)
+    losers = fetch_screener_symbols("day_losers", losers_n)
+    combined = filter_equity_symbols((gainers or []) + (losers or []))
+    if combined:
+        return merge_with_fallback(combined, count)
+    return fetch_top_gainers(count)
 
 
 def filter_equity_symbols(symbols: list[str]) -> list[str]:
@@ -1060,14 +1108,34 @@ def news_sentiment(symbol: str, news_items: list[dict[str, Any]]) -> tuple[float
     return score_headline_sentiment(headlines)
 
 
+def build_news_feed_urls(symbol: str) -> list[str]:
+    q_symbol = quote_plus(symbol)
+    q_stock = quote_plus(f"{symbol} stock")
+    q_filings_transcripts = quote_plus(
+        f"{symbol} (8-K OR 10-Q OR 10-K OR earnings call transcript OR investor presentation)"
+    )
+    q_macro = quote_plus(
+        "FOMC OR Federal Reserve OR CPI OR PCE OR Nonfarm Payrolls OR unemployment rate OR treasury yield"
+    )
+    q_niche = quote_plus(f"{symbol} stock sentiment")
+    return [
+        # Core feeds
+        f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={q_symbol}&region=US&lang=en-US",
+        f"https://news.google.com/rss/search?q={q_stock}&hl=en-US&gl=US&ceid=US:en",
+        # SEC/filings + earnings transcripts (core fundamental signal)
+        f"https://news.google.com/rss/search?q={q_filings_transcripts}&hl=en-US&gl=US&ceid=US:en",
+        # Macro/economic calendar-like events (secondary context signal)
+        f"https://news.google.com/rss/search?q={q_macro}&hl=en-US&gl=US&ceid=US:en",
+        "https://www.federalreserve.gov/feeds/press_all.xml",
+        # Niche sentiment (speculative / low weight by config)
+        f"https://www.reddit.com/search.rss?q={q_niche}&sort=new&t=day",
+    ]
+
+
 def fetch_web_news_headlines(symbol: str, limit: int = 20) -> list[NewsHeadline]:
     if not symbol:
         return []
-    query = quote_plus(f"{symbol} stock")
-    urls = [
-        f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote_plus(symbol)}&region=US&lang=en-US",
-        f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
-    ]
+    urls = build_news_feed_urls(symbol)
     headlines: list[NewsHeadline] = []
     for url in urls:
         try:
@@ -1087,6 +1155,10 @@ def fetch_web_news_headlines(symbol: str, limit: int = 20) -> list[NewsHeadline]
                     source = source_el.text.strip()
                 elif "news.google.com" in url and " - " in title:
                     source = title.rsplit(" - ", 1)[-1].strip()
+                elif "federalreserve.gov" in url:
+                    source = "Federal Reserve"
+                elif "reddit.com" in url:
+                    source = "Reddit"
                 pub_ts = parse_rss_pubdate(item.findtext("pubDate", default=""))
                 headlines.append(NewsHeadline(title=title, source=source, published_ts=pub_ts))
         except Exception:
@@ -1100,6 +1172,42 @@ def fetch_web_news_headlines(symbol: str, limit: int = 20) -> list[NewsHeadline]
         seen.add(key)
         deduped.append(h)
     return deduped[:limit]
+
+
+def source_tier(source: str) -> str:
+    s = (source or "").lower()
+    core_keys = (
+        "reuters",
+        "bloomberg",
+        "wall street journal",
+        "wsj",
+        "financial times",
+        "cnbc",
+        "marketwatch",
+        "barron",
+        "yahoo finance",
+        "sec",
+        "federal reserve",
+    )
+    secondary_keys = (
+        "seeking alpha",
+        "benzinga",
+        "motley fool",
+        "investing.com",
+    )
+    speculative_keys = (
+        "reddit",
+        "stocktwits",
+        "x.com",
+        "twitter",
+    )
+    if any(k in s for k in speculative_keys):
+        return "speculative"
+    if any(k in s for k in core_keys):
+        return "core"
+    if any(k in s for k in secondary_keys):
+        return "secondary"
+    return "secondary"
 
 
 def parse_rss_pubdate(value: str) -> float:
@@ -1151,22 +1259,37 @@ def score_headline_sentiment(headlines: list[NewsHeadline]) -> tuple[float, str]
     checked = 0
     now_ts = now_utc().timestamp()
     max_scored = max(1, int(NEWS_CONFIG.get("max_headlines_scored", 40)))
+    max_per_source = max(1, int(NEWS_CONFIG.get("max_headlines_per_source", 4)))
+    tier_multipliers = NEWS_CONFIG.get("tier_multipliers", {"core": 1.0, "secondary": 0.8, "speculative": 0.45})
+    tier_limits_cfg = NEWS_CONFIG.get("tier_limits", {"core": 24, "secondary": 12, "speculative": 6})
+    source_counts: dict[str, int] = {}
+    tier_counts: dict[str, int] = {}
     for headline in headlines[:max_scored]:
+        source_key = (headline.source or "unknown").lower()
+        if source_counts.get(source_key, 0) >= max_per_source:
+            continue
+        tier = source_tier(headline.source)
+        tier_limit = max(1, int(safe_float(tier_limits_cfg.get(tier), 8)))
+        if tier_counts.get(tier, 0) >= tier_limit:
+            continue
         t = headline.title.lower()
         p = sum(1 for w in POSITIVE_WORDS if w in t)
         n = sum(1 for w in NEGATIVE_WORDS if w in t)
         base = p - n
-        w = source_weight(headline.source) * recency_weight(headline.published_ts, now_ts)
+        tier_mul = safe_float(tier_multipliers.get(tier), 1.0)
+        w = source_weight(headline.source) * tier_mul * recency_weight(headline.published_ts, now_ts)
         weighted_score += base * w
         total_weight += w
         checked += 1
+        source_counts[source_key] = source_counts.get(source_key, 0) + 1
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
     if checked == 0 or total_weight <= 0:
         return 0.0, "no_parsable_headlines"
     raw = weighted_score / total_weight
     divisor = max(0.1, safe_float(NEWS_CONFIG.get("normalization_divisor"), 2.5))
     normalized = clamp(raw / divisor, -1, 1)
-    return normalized, f"headline_sentiment={raw:.2f} weighted from {checked} headlines"
+    return normalized, f"headline_sentiment={raw:.2f} weighted from {checked} headlines tiers={tier_counts}"
 
 
 def pick_option_candidate(ticker: yf.Ticker, action_option: str, underlying_price: float) -> tuple[str, str, float]:
@@ -1402,11 +1525,83 @@ def find_last_available_snapshot(base_dir: Path) -> tuple[Path | None, Path | No
     return csv_path, (md_path if md_path.exists() else None)
 
 
+def data_root_dir(base_dir: Path) -> Path:
+    # Common layouts:
+    # - data/daily/YYYYMMDD -> data
+    # - data                 -> data
+    if base_dir.name == "data":
+        return base_dir
+    if base_dir.parent.name == "daily":
+        return base_dir.parent.parent
+    if base_dir.parent.name == "data":
+        return base_dir.parent
+    return base_dir
+
+
+def refresh_simple_view(base_dir: Path, run_ts: str) -> None:
+    root = data_root_dir(base_dir)
+    simple_dir = root / "simple"
+    latest_dir = base_dir / "latest"
+    logs_dir = base_dir / "logs"
+    simple_dir.mkdir(parents=True, exist_ok=True)
+
+    copies = [
+        ("top10.md", "top10.md"),
+        ("top10.csv", "top10.csv"),
+        ("candidates.csv", "candidates.csv"),
+        ("portfolio_status.json", "portfolio_status.json"),
+        ("portfolio_report.md", "portfolio_report.md"),
+        ("daily_summary.md", "daily_summary.md"),
+        ("alerts.json", "alerts.json"),
+        ("post_analysis.json", "post_analysis.json"),
+    ]
+    for src_name, dst_name in copies:
+        src = latest_dir / src_name
+        if src.exists():
+            shutil.copy2(src, simple_dir / dst_name)
+
+    latest_log = None
+    if logs_dir.exists():
+        logs = sorted(logs_dir.glob("run_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            latest_log = logs[0]
+            shutil.copy2(latest_log, simple_dir / "latest_run.log")
+
+    summary = {
+        "timestamp_utc": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "run_id": run_ts,
+        "source_base_dir": str(base_dir),
+        "source_latest_dir": str(latest_dir),
+        "latest_log": str(latest_log) if latest_log else "",
+        "note": "Simple view with key files only.",
+    }
+    (simple_dir / "README.md").write_text(
+        "\n".join(
+            [
+                "# Simple Data View",
+                "",
+                "- `top10.md`: current recommendations",
+                "- `top10.csv`: current recommendations (csv)",
+                "- `portfolio_status.json`: latest balances and run P/L",
+                "- `portfolio_report.md`: human-readable portfolio report",
+                "- `daily_summary.md`: daily summary with next-day improvements",
+                "- `alerts.json`: latest alert payload",
+                "- `post_analysis.json`: latest learning/adaptation summary",
+                "- `latest_run.log`: latest run log",
+                "",
+                "Generated automatically after each run.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (simple_dir / "status.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
 def portfolio_default_state() -> dict[str, Any]:
     return {
-        "initial_capital": INITIAL_CAPITAL,
+        "capital_balance": INITIAL_CAPITAL,
         "cash": INITIAL_CAPITAL,
-        "equity": INITIAL_CAPITAL,
+        "simulation_balance": INITIAL_CAPITAL,
         "run_count": 0,
         "open_positions": [],
         "closed_positions_count": 0,
@@ -1425,6 +1620,12 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
                 if isinstance(data, dict):
                     out = portfolio_default_state()
                     out.update(data)
+                    if "capital_balance" not in data:
+                        out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
+                    if "simulation_balance" not in data:
+                        out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+                    out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
+                    out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
                     if not isinstance(out.get("open_positions"), list):
                         out["open_positions"] = []
                     return out
@@ -1439,6 +1640,14 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
         return portfolio_default_state()
     out = portfolio_default_state()
     out.update(data)
+    # Backward compatibility for legacy keys.
+    if "capital_balance" not in data:
+        out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
+    if "simulation_balance" not in data:
+        out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+    # Keep aliases in memory for older call sites that may still read them.
+    out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
+    out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
     if not isinstance(out.get("open_positions"), list):
         out["open_positions"] = []
     return out
@@ -1453,9 +1662,13 @@ def save_portfolio_state(base_dir: Path, state: dict[str, Any]) -> None:
 def set_simulation_budget(base_dir: Path, balance: float) -> dict[str, Any]:
     b = max(0.0, round(float(balance), 4))
     state = load_portfolio_state(base_dir)
-    state["initial_capital"] = b
+    # Keep capital_balance as fixed reporting baseline; reset only live simulation balance.
+    state["capital_balance"] = INITIAL_CAPITAL
     state["cash"] = b
-    state["equity"] = b
+    state["simulation_balance"] = b
+    # Backward-compatible aliases.
+    state["initial_capital"] = state["capital_balance"]
+    state["equity"] = state["simulation_balance"]
     state["run_count"] = 0
     state["open_positions"] = []
     state["closed_positions_count"] = 0
@@ -1640,17 +1853,49 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
         except Exception:
             pass
 
+    next_trading_day = now_et + timedelta(days=1)
+    while next_trading_day.weekday() >= 5:
+        next_trading_day += timedelta(days=1)
+    next_day_label = next_trading_day.strftime("%Y-%m-%d")
+
     improvements: list[str] = []
-    if day_pnl < 0:
-        improvements.append("Reduce new position size or tighten entry thresholds on weak days.")
-    if win_rate is not None and win_rate < 0.5:
-        improvements.append("Increase selectivity: require higher total score before opening trades.")
+
+    if day_pnl < 0 or (win_rate is not None and win_rate < 0.5):
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): tighten entries by raising buy threshold by +0.02 and cap new risk to 0.60% per trade until accuracy improves."
+        )
+    else:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): keep risk at 0.75% per trade, but only open new positions when score and market regime agree."
+        )
+
     if closes_count == 0:
-        improvements.append("Few/zero closed trades today; review hold-time and exit calibration.")
-    if not post_status_counts:
-        improvements.append("Post-analysis data is sparse; ensure runs occur during market hours.")
-    if not improvements:
-        improvements.append("Keep current risk controls; monitor drawdown and maintain stock-only discipline.")
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): shorten time-in-trade review cadence and force an end-of-day exit check at 15:50 ET for stale positions."
+        )
+    elif win_rate is not None and win_rate < 0.5:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): tighten stop discipline by trimming loser hold time and requiring stronger follow-through after entry."
+        )
+    else:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): keep current exit logic and review any stop-outs for slippage before next session."
+        )
+
+    total_post = sum(post_status_counts.values())
+    too_fresh_count = int(post_status_counts.get("too_fresh", 0))
+    if total_post == 0:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): ensure post-analysis snapshots are captured during market hours to maintain learning signal quality."
+        )
+    elif too_fresh_count / max(total_post, 1) >= 0.5:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): reduce too-fresh evaluations by delaying evaluation checks and prioritizing mature prior runs."
+        )
+    else:
+        improvements.append(
+            f"Tomorrow ({next_day_label} ET): maintain current learning cadence and monitor post-analysis accuracy drift run-to-run."
+        )
 
     lines = [
         f"# Daily Strategy Summary ({today_et} ET)",
@@ -1697,9 +1942,9 @@ def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positio
         "# Portfolio Report",
         "",
         f"Timestamp (UTC): `{summary.get('timestamp_utc', '')}`",
-        f"Initial Capital: `${safe_float(summary.get('initial_capital')):,.2f}`",
+        f"Capital Balance: `${safe_float(summary.get('capital_balance'), safe_float(summary.get('initial_capital'))):,.2f}`",
         f"Start Equity: `${safe_float(summary.get('start_equity')):,.2f}`",
-        f"End Equity: `${safe_float(summary.get('end_equity')):,.2f}`",
+        f"Simulation Balance: `${safe_float(summary.get('simulation_balance'), safe_float(summary.get('end_equity'))):,.2f}`",
         f"Run P/L: `${safe_float(summary.get('run_pnl')):,.2f}` ({safe_float(summary.get('run_return_pct')):.2f}%)",
         f"Total Return: `{safe_float(summary.get('total_return_pct')):.2f}%`",
         f"Cash: `${safe_float(summary.get('cash')):,.2f}`",
@@ -2000,8 +2245,9 @@ def build_new_position(row: dict[str, Any], equity: float, cash: float, run_coun
 
 def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_after_hours: bool) -> dict[str, Any]:
     state = load_portfolio_state(base_dir)
-    base_capital = safe_float(state.get("initial_capital"), INITIAL_CAPITAL)
-    start_equity = safe_float(state.get("equity"), base_capital)
+    # capital_balance is a fixed benchmark (e.g., 10000) and should not drift run-to-run.
+    base_capital = INITIAL_CAPITAL
+    start_equity = safe_float(state.get("simulation_balance"), safe_float(state.get("equity"), base_capital))
     cash = safe_float(state.get("cash"), base_capital)
     run_count = int(state.get("run_count", 0)) + 1
     open_positions: list[dict[str, Any]] = list(state.get("open_positions", []))
@@ -2047,30 +2293,50 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
 
     open_positions = still_open
     equity = cash + open_value
-    current_exposure_cap = equity * MAX_PORTFOLIO_EXPOSURE_PCT
+    full_deploy = bool(TRADING_CONFIG.get("full_budget_deploy", False))
+    deploy_target_pct = clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0)
+    target_exposure_pct = deploy_target_pct if full_deploy else MAX_PORTFOLIO_EXPOSURE_PCT
+    max_open_positions = 20 if full_deploy else MAX_OPEN_POSITIONS
+    current_exposure_cap = equity * target_exposure_pct
 
     candidate_rows = top10.to_dict(orient="records")
     used_symbols = {str(p.get("symbol")) for p in open_positions}
-    # Prefer stock trades for low-risk profile, then small options sleeve.
-    for instrument in ("STOCK", "OPTION"):
-        for row in candidate_rows:
-            if len(open_positions) >= MAX_OPEN_POSITIONS:
+    if full_deploy:
+        actionable = [
+            r
+            for r in candidate_rows
+            if str(r.get("action_stock", "")) in {"BUY_STOCK", "SELL_SHORT"}
+        ]
+        remaining_slots = len(actionable)
+        for row in actionable:
+            if len(open_positions) >= max_open_positions or cash < 100:
                 break
             symbol = str(row.get("symbol", ""))
-            if not symbol or symbol in used_symbols:
+            if not symbol:
+                remaining_slots = max(0, remaining_slots - 1)
                 continue
             open_value = sum(
-                mark_position_value(p, fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours) or safe_float(p.get("entry_underlying_price"), 0.0))
+                mark_position_value(
+                    p,
+                    fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
+                    or safe_float(p.get("entry_underlying_price"), 0.0),
+                )
                 for p in open_positions
             )
             if open_value >= current_exposure_cap:
                 break
-            pos = build_new_position(row, equity, cash, run_count, instrument)
+            pos = build_new_position(row, equity, cash, run_count, "STOCK")
+            remaining_slots = max(0, remaining_slots - 1)
             if pos is None:
                 continue
-            alloc = safe_float(pos.get("capital_allocated"), 0.0)
-            if open_value + alloc > current_exposure_cap:
+            # Distribute cash across remaining actionable picks to approach full deployment.
+            slots_divisor = max(1, remaining_slots + 1)
+            planned_alloc = cash / slots_divisor
+            room = max(0.0, current_exposure_cap - open_value)
+            alloc = min(max(100.0, planned_alloc), cash, room)
+            if alloc < 100:
                 continue
+            pos["capital_allocated"] = round(alloc, 4)
             cash -= alloc
             open_positions.append(pos)
             used_symbols.add(symbol)
@@ -2086,10 +2352,110 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
                     "capital_allocated": pos.get("capital_allocated"),
                     "value": pos.get("capital_allocated"),
                     "pnl": 0.0,
-                    "reason": "signal_open",
+                    "reason": "signal_open_full_budget",
                     "hold_runs": 0,
                 }
             )
+        # If there is remaining cash, top up existing stock positions to approach full deployment.
+        if cash >= 100 and open_positions:
+            stock_targets = [p for p in open_positions if str(p.get("instrument", "")) == "STOCK"]
+            remaining_targets = len(stock_targets)
+            for idx, pos0 in enumerate(stock_targets, start=1):
+                if cash < 100:
+                    break
+                remaining_targets = max(1, remaining_targets)
+                open_value = sum(
+                    mark_position_value(
+                        p,
+                        fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
+                        or safe_float(p.get("entry_underlying_price"), 0.0),
+                    )
+                    for p in open_positions
+                )
+                room = max(0.0, current_exposure_cap - open_value)
+                if room < 100:
+                    break
+                alloc = min(cash / remaining_targets, cash, room)
+                if alloc < 100:
+                    remaining_targets -= 1
+                    continue
+                symbol = str(pos0.get("symbol", ""))
+                px = fetch_symbol_price(symbol, enable_after_hours)
+                if px <= 0:
+                    px = safe_float(pos0.get("entry_underlying_price"), 0.0)
+                new_pos = {
+                    "id": f"{symbol}_STOCK_{run_count}_TOPUP_{idx}",
+                    "symbol": symbol,
+                    "instrument": "STOCK",
+                    "direction": str(pos0.get("direction", "LONG")),
+                    "leverage": 1.0,
+                    "capital_allocated": round(alloc, 4),
+                    "entry_underlying_price": round(px, 4),
+                    "stop_price": safe_float(pos0.get("stop_price"), 0.0),
+                    "target_price": safe_float(pos0.get("target_price"), 0.0),
+                    "opened_run": run_count,
+                    "hold_runs": 0,
+                    "entry_score": safe_float(pos0.get("entry_score"), 0.0),
+                }
+                open_positions.append(new_pos)
+                cash -= alloc
+                events.append(
+                    {
+                        "timestamp_utc": run_ts,
+                        "event": "OPEN",
+                        "symbol": symbol,
+                        "instrument": "STOCK",
+                        "direction": new_pos.get("direction"),
+                        "entry_price": new_pos.get("entry_underlying_price"),
+                        "exit_price": "",
+                        "capital_allocated": new_pos.get("capital_allocated"),
+                        "value": new_pos.get("capital_allocated"),
+                        "pnl": 0.0,
+                        "reason": "signal_open_full_budget_topup",
+                        "hold_runs": 0,
+                    }
+                )
+                remaining_targets -= 1
+    else:
+        # Prefer stock trades for low-risk profile, then small options sleeve.
+        for instrument in ("STOCK", "OPTION"):
+            for row in candidate_rows:
+                if len(open_positions) >= max_open_positions:
+                    break
+                symbol = str(row.get("symbol", ""))
+                if not symbol or symbol in used_symbols:
+                    continue
+                open_value = sum(
+                    mark_position_value(p, fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours) or safe_float(p.get("entry_underlying_price"), 0.0))
+                    for p in open_positions
+                )
+                if open_value >= current_exposure_cap:
+                    break
+                pos = build_new_position(row, equity, cash, run_count, instrument)
+                if pos is None:
+                    continue
+                alloc = safe_float(pos.get("capital_allocated"), 0.0)
+                if open_value + alloc > current_exposure_cap:
+                    continue
+                cash -= alloc
+                open_positions.append(pos)
+                used_symbols.add(symbol)
+                events.append(
+                    {
+                        "timestamp_utc": run_ts,
+                        "event": "OPEN",
+                        "symbol": symbol,
+                        "instrument": pos.get("instrument"),
+                        "direction": pos.get("direction"),
+                        "entry_price": pos.get("entry_underlying_price"),
+                        "exit_price": "",
+                        "capital_allocated": pos.get("capital_allocated"),
+                        "value": pos.get("capital_allocated"),
+                        "pnl": 0.0,
+                        "reason": "signal_open",
+                        "hold_runs": 0,
+                    }
+                )
 
     # Re-mark open positions for ending equity.
     end_open_value = 0.0
@@ -2104,8 +2470,12 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     run_return = (run_pnl / start_equity) if start_equity > 0 else 0.0
     total_return = (end_equity / base_capital - 1.0) if base_capital > 0 else 0.0
 
+    state["capital_balance"] = base_capital
     state["cash"] = round(cash, 4)
-    state["equity"] = round(end_equity, 4)
+    state["simulation_balance"] = round(end_equity, 4)
+    # Backward-compatible aliases.
+    state["initial_capital"] = state["capital_balance"]
+    state["equity"] = state["simulation_balance"]
     state["run_count"] = run_count
     state["open_positions"] = open_positions
     state["last_updated_utc"] = run_ts
@@ -2132,10 +2502,10 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     latest_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "timestamp_utc": run_ts,
-        "initial_capital": base_capital,
+        "capital_balance": base_capital,
         "real_trading_capital": REAL_TRADING_CAPITAL,
         "start_equity": round(start_equity, 4),
-        "end_equity": round(end_equity, 4),
+        "simulation_balance": round(end_equity, 4),
         "run_pnl": round(run_pnl, 4),
         "run_return_pct": round(run_return * 100, 4),
         "total_return_pct": round(total_return * 100, 4),
@@ -2147,10 +2517,14 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
             "risk_per_trade_pct": RISK_PER_TRADE * 100,
             "max_stock_alloc_pct": MAX_STOCK_ALLOC_PCT * 100,
             "max_option_alloc_pct": MAX_OPTION_ALLOC_PCT * 100,
-            "max_portfolio_exposure_pct": MAX_PORTFOLIO_EXPOSURE_PCT * 100,
-            "max_open_positions": MAX_OPEN_POSITIONS,
+            "max_portfolio_exposure_pct": target_exposure_pct * 100,
+            "max_open_positions": max_open_positions,
+            "full_budget_deploy": full_deploy,
         },
     }
+    # Backward-compatible aliases for existing consumers.
+    summary["initial_capital"] = summary["capital_balance"]
+    summary["end_equity"] = summary["simulation_balance"]
     (latest_dir / "portfolio_status.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     write_portfolio_report(base_dir, summary, open_positions, enable_after_hours)
     return summary
@@ -2169,7 +2543,20 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     all_df = add_instruction_columns(all_df)
     all_df.to_csv(run_dir / "candidates.csv", index=False)
 
-    top10 = all_df.head(10).copy()
+    actionable = all_df[all_df["action_stock"].isin(["BUY_STOCK", "SELL_SHORT"])].copy()
+    if not actionable.empty:
+        actionable["edge_score"] = actionable.apply(
+            lambda r: safe_float(r.get("total_score"), 0.0)
+            if str(r.get("action_stock", "")) == "BUY_STOCK"
+            else -safe_float(r.get("total_score"), 0.0),
+            axis=1,
+        )
+        top10 = actionable.sort_values("edge_score", ascending=False).head(10).drop(columns=["edge_score"], errors="ignore")
+        if len(top10) < 10:
+            fill = all_df.loc[~all_df["symbol"].isin(set(top10["symbol"]))].head(10 - len(top10))
+            top10 = pd.concat([top10, fill], ignore_index=True)
+    else:
+        top10 = all_df.head(10).copy()
     alert_summary = process_notifications(base_dir, ts, top10, market_ctx)
     (run_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
     portfolio_summary = update_portfolio(
@@ -2186,8 +2573,8 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     budget_plan = build_budget_plan(
         top10,
         safe_float(portfolio_summary.get("start_equity"), sizing_equity),
-        safe_float(portfolio_summary.get("end_equity"), sizing_equity),
-        safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL),
+        safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), sizing_equity)),
+        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
     )
 
     md_lines = [
@@ -2200,10 +2587,10 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"(close date ET: {market_ctx.get('price_reference_close_date_et', '')})",
         "",
         "## Portfolio",
-        f"- Initial capital: `${portfolio_summary.get('initial_capital', 0):,.2f}`",
+        f"- Capital balance: `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
         f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
-        f"- End equity this run: `${portfolio_summary.get('end_equity', 0):,.2f}`",
+        f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
         f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
         f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
@@ -2292,6 +2679,7 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     (latest_dir / "top10.md").write_text("\n".join(md_lines), encoding="utf-8")
 
     generate_daily_summary(base_dir, ts)
+    refresh_simple_view(base_dir, ts)
     return run_dir
 
 
@@ -2531,7 +2919,11 @@ def run_once(base_dir: Path, universe_count: int, enable_after_hours: bool) -> P
     if str(mkt.get("market_session", "")) == "weekend":
         symbols = STABLE_UNIVERSE[: max(10, universe_count)]
     else:
-        symbols = fetch_top_gainers(universe_count)
+        symbols = fetch_market_movers(
+            universe_count,
+            bool(TRADING_CONFIG.get("include_downtrend_symbols", True)),
+            safe_float(TRADING_CONFIG.get("downtrend_symbol_ratio", 0.4), 0.4),
+        )
     regime, ctx = market_regime()
     mkt_score = market_trend_score(regime, ctx)
     category_ctx = build_category_context()
@@ -2726,8 +3118,8 @@ def save_symbol_summary(
     if row is not None:
         df = add_instruction_columns(pd.DataFrame([asdict(row)]))
         sim_state = load_portfolio_state(base_dir)
-        sim_equity = safe_float(sim_state.get("equity"), INITIAL_CAPITAL)
-        sim_baseline = safe_float(sim_state.get("initial_capital"), INITIAL_CAPITAL)
+        sim_equity = safe_float(sim_state.get("simulation_balance"), safe_float(sim_state.get("equity"), INITIAL_CAPITAL))
+        sim_baseline = safe_float(sim_state.get("capital_balance"), safe_float(sim_state.get("initial_capital"), INITIAL_CAPITAL))
         df = add_sizing_columns(df, max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0)))
         df = add_instruction_columns(df)
         single_budget = build_budget_plan(df, sim_equity, sim_equity, sim_baseline)
@@ -2921,8 +3313,8 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
     budget_plan = build_budget_plan(
         stale_top10,
         safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
-        safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL),
-        safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL),
+        safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL)),
+        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
     )
 
     latest_candidates = base_dir / "latest" / "candidates.csv"
@@ -2940,9 +3332,9 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         f"Price reference: `last_regular_close` (close date ET: {previous_trading_day_et()})",
         "",
         "## Portfolio",
-        f"- Initial capital: `${portfolio_summary.get('initial_capital', 0):,.2f}`",
+        f"- Capital balance: `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
         f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
-        f"- End equity this run: `${portfolio_summary.get('end_equity', 0):,.2f}`",
+        f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
         f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
         f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
@@ -3019,13 +3411,14 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
     with (run_dir / "status.json").open("w", encoding="utf-8") as f:
         json.dump(status, f, indent=2)
     generate_daily_summary(base_dir, ts)
+    refresh_simple_view(base_dir, ts)
     return run_dir
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Automated Yahoo-based stock/options analysis")
     parser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR), help="Output folder for run snapshots")
-    parser.add_argument("--universe-count", type=int, default=50, help="Number of top gainers to analyze")
+    parser.add_argument("--universe-count", type=int, default=50, help="Number of top market movers (gainers+losers) to analyze")
     parser.add_argument("--symbol", default="", help="Single stock symbol summary mode (e.g., AAPL).")
     parser.add_argument(
         "--config",
@@ -3079,9 +3472,9 @@ def main() -> int:
         state = set_simulation_budget(base_dir, float(sim_budget_override))
         print(
             "Simulation budget updated. "
-            f"initial_capital={safe_float(state.get('initial_capital'), 0):.2f} "
+            f"capital_balance={safe_float(state.get('capital_balance'), safe_float(state.get('initial_capital'), 0)):.2f} "
             f"cash={safe_float(state.get('cash'), 0):.2f} "
-            f"equity={safe_float(state.get('equity'), 0):.2f} "
+            f"simulation_balance={safe_float(state.get('simulation_balance'), safe_float(state.get('equity'), 0)):.2f} "
             f"real_trading_capital={REAL_TRADING_CAPITAL:.2f} "
             f"state_file={PORTFOLIO_STATE_PATH}"
         )

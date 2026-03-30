@@ -1,0 +1,8 @@
+{
+  "timestamp_utc": "2026-03-30T23:02:33Z",
+  "run_id": "20260330_230231",
+  "source_base_dir": "/Users/mdorjtse/codex_sample/data/daily/20260330",
+  "source_latest_dir": "/Users/mdorjtse/codex_sample/data/daily/20260330/latest",
+  "latest_log": "/Users/mdorjtse/codex_sample/data/daily/20260330/logs/run_20260330_225836.log",
+  "note": "Simple view with key files only."
+}

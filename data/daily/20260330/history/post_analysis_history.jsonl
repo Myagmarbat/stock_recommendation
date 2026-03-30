@@ -43,3 +43,9 @@
 {"timestamp_utc": "2026-03-30T19:10:08Z", "status": "updated", "evaluated_run_id": "20260330_185234", "market_session": "regular", "price_reference_mode": "regular_session_only", "evaluated": 4, "correct": 0, "accuracy": 0.0, "buy_accuracy": 0.0, "short_accuracy": null, "weights": {"fundamental": 0.3499, "technical": 0.3274, "news": 0.1319}, "threshold_adjustments": {"buy": 0.02, "short": 0.0}}
 {"timestamp_utc": "2026-03-30T19:30:07Z", "status": "updated", "evaluated_run_id": "20260330_191233", "market_session": "regular", "price_reference_mode": "regular_session_only", "evaluated": 1, "correct": 1, "accuracy": 1.0, "buy_accuracy": 1.0, "short_accuracy": null, "weights": {"fundamental": 0.3573, "technical": 0.3343, "news": 0.1334}, "threshold_adjustments": {"buy": 0.02, "short": 0.0}}
 {"timestamp_utc": "2026-03-30T20:00:08Z", "status": "updated", "evaluated_run_id": "20260330_193229", "market_session": "after_hours", "price_reference_mode": "market_close", "evaluated": 2, "correct": 1, "accuracy": 0.5, "buy_accuracy": 0.5, "short_accuracy": null, "weights": {"fundamental": 0.3511, "technical": 0.3301, "news": 0.1351}, "threshold_adjustments": {"buy": 0.02, "short": 0.0}}
+{"timestamp_utc": "2026-03-30T22:48:30Z", "status": "no_evaluable_rows", "evaluated_run_id": "20260330_200225", "market_session": "after_hours", "price_reference_mode": "market_close"}
+{"timestamp_utc": "2026-03-30T22:50:00Z", "status": "already_evaluated", "evaluated_run_id": "20260330_200225"}
+{"timestamp_utc": "2026-03-30T22:53:51Z", "status": "already_evaluated", "evaluated_run_id": "20260330_200225"}
+{"timestamp_utc": "2026-03-30T22:54:44Z", "status": "already_evaluated", "evaluated_run_id": "20260330_200225"}
+{"timestamp_utc": "2026-03-30T22:56:30Z", "status": "already_evaluated", "evaluated_run_id": "20260330_200225"}
+{"timestamp_utc": "2026-03-30T22:58:36Z", "status": "already_evaluated", "evaluated_run_id": "20260330_200225"}

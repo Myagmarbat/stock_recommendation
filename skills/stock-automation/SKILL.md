@@ -1,16 +1,16 @@
 # Stock Automation Skill
 
 ## Purpose
-Run the analysis pipeline automatically in background during US market hours, every 10 minutes, while preserving timestamped historical results.
+Run the analysis pipeline automatically in background during US market hours, every 30 minutes, while preserving timestamped historical results.
 
 ## Schedule and Cadence
-- Main cycle: every 10 minutes, weekdays during regular US market session.
+- Main cycle: every 30 minutes, weekdays during regular US market session.
 - Default schedule window: `06:30–13:00 America/Los_Angeles` (09:30–16:00 ET), no weekends.
 - Off-hours execution is manual by command.
 - Hourly archive: store additional snapshot when minute is `00`.
 - Daily archive: store additional snapshot near market close (around 16:00 local).
 - Daily strategy summary: one generation per weekday after close (>=16:00 ET).
-- Every 10-minute cycle must run in this order:
+- Every cycle must run in this order:
   1. Post-analyze previous run.
   2. Learn from wrong recommendations.
   3. Apply updated parameters to current run.
@@ -24,7 +24,7 @@ Run the analysis pipeline automatically in background during US market hours, ev
 ## Background Runtime (macOS)
 - Install: `scripts/install_launchd.sh`
 - Remove: `scripts/uninstall_launchd.sh`
-- Launchd interval: `600` seconds within scheduled market-hour windows.
+- Launchd interval: scheduled calendar triggers every 30 minutes within market-hour windows.
 
 ## Storage Contract
 - Daily root:
@@ -65,7 +65,7 @@ Run the analysis pipeline automatically in background during US market hours, ev
 - Preserve previous latest output for continuity.
 
 ## Recommendation Output Requirement
-Each 10-minute run must produce top-10 recommendations with direction:
+Each run must produce top-10 recommendations with direction:
 - Stock direction: buy, short sell, or hold.
 - Option direction: buy call, buy put, or no option.
 - Default conservative profile: stock-only (`action_option=NO_OPTION`).
