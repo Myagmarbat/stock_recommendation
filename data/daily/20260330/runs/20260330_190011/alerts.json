@@ -1,0 +1,31 @@
+{
+  "timestamp_utc": "20260330_190011",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "EQT",
+      "score": 0.807,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 63.94,
+      "target": 68.9,
+      "stop": 60.96,
+      "rr": 1.67
+    },
+    {
+      "symbol": "XOM",
+      "score": 0.79,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 171.63,
+      "target": 180.27,
+      "stop": 166.45,
+      "rr": 1.67
+    }
+  ]
+}

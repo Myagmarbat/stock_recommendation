@@ -1,0 +1,12 @@
+{
+  "regime": "stale_snapshot",
+  "market_open": false,
+  "market_session": "weekend",
+  "next_open_et": "2026-03-30 09:30:00 EDT",
+  "next_close_et": "2026-03-30 16:00:00 EDT",
+  "error": "No analyzable symbols were returned. Try again later.",
+  "post_analysis": {
+    "timestamp_utc": "2026-03-29T20:07:50Z",
+    "status": "no_evaluable_runs"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "initial_capital": 11000.0,
+  "cash": 4400.1607,
+  "equity": 10958.4312,
+  "run_count": 26,
+  "open_positions": [
+    {
+      "id": "XOM_STOCK_1",
+      "symbol": "XOM",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1320.0,
+      "entry_underlying_price": 173.8818,
+      "stop_price": 168.6999,
+      "target_price": 182.5182,
+      "opened_run": 1,
+      "hold_runs": 25,
+      "entry_score": 0.8021
+    },
+    {
+      "id": "CVX_STOCK_1",
+      "symbol": "CVX",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1320.0,
+      "entry_underlying_price": 212.8595,
+      "stop_price": 207.5718,
+      "target_price": 221.6724,
+      "opened_run": 1,
+      "hold_runs": 25,
+      "entry_score": 0.7262
+    },
+    {
+      "id": "VZ_STOCK_1",
+      "symbol": "VZ",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1320.0,
+      "entry_underlying_price": 50.2538,
+      "stop_price": 49.0705,
+      "target_price": 52.2259,
+      "opened_run": 1,
+      "hold_runs": 25,
+      "entry_score": 0.4172
+    },
+    {
+      "id": "T_STOCK_1",
+      "symbol": "T",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1320.0,
+      "entry_underlying_price": 28.9579,
+      "stop_price": 28.2321,
+      "target_price": 30.1675,
+      "opened_run": 1,
+      "hold_runs": 25,
+      "entry_score": 0.391
+    },
+    {
+      "id": "WMT_STOCK_8",
+      "symbol": "WMT",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1319.8393,
+      "entry_underlying_price": 123.8274,
+      "stop_price": 120.7391,
+      "target_price": 128.9745,
+      "opened_run": 8,
+      "hold_runs": 18,
+      "entry_score": 0.2683
+    }
+  ],
+  "closed_positions_count": 0,
+  "last_updated_utc": "20260330_200225"
+}

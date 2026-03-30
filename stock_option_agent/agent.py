@@ -1,0 +1,3107 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import random
+import re
+import time
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone, timedelta, time as dt_time
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any
+import shutil
+from urllib.parse import quote_plus
+import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import requests
+import yfinance as yf
+
+YAHOO_SCREENER_URL = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+YAHOO_SCREENER_URL_ALT = "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
+YAHOO_GAINERS_PAGE = "https://finance.yahoo.com/markets/stocks/gainers/"
+DEFAULT_BASE_DIR = Path("data")
+MODEL_STATE_PATH = Path("data/model/model_params.json")
+PORTFOLIO_STATE_PATH = Path("data/portfolio/state.json")
+AGENT_CONFIG_PATH = Path("config/agent_config.json")
+US_MARKET_TZ = ZoneInfo("America/New_York")
+US_MARKET_OPEN = dt_time(9, 30)
+US_MARKET_CLOSE = dt_time(16, 0)
+MIN_LEARNING_AGE_MINUTES = 10
+MIN_RETURN_FOR_LABEL = 0.002
+DEFAULT_ENABLE_AFTER_HOURS = False
+INITIAL_CAPITAL = 10000.0
+REAL_TRADING_CAPITAL = 10000.0
+RISK_PER_TRADE = 0.0075
+MAX_STOCK_ALLOC_PCT = 0.12
+MAX_OPTION_ALLOC_PCT = 0.01
+MAX_PORTFOLIO_EXPOSURE_PCT = 0.60
+MAX_OPEN_POSITIONS = 8
+MAX_HOLD_RUNS_STOCK = 6 * 24 * 5
+MAX_HOLD_RUNS_OPTION = 6 * 24 * 3
+CONSERVATIVE_PROFILE = True
+MIN_MARKET_CAP = 2_000_000_000
+MIN_AVG_VOLUME = 2_000_000
+MIN_PRICE = 15.0
+MAX_VOL20 = 0.035
+MAX_BETA = 1.8
+
+POSITIVE_WORDS = {
+    "beat",
+    "growth",
+    "surge",
+    "strong",
+    "profit",
+    "record",
+    "upgrade",
+    "expands",
+    "bullish",
+    "outperform",
+    "raise",
+    "raised",
+    "buyback",
+    "partnership",
+    "guidance",
+    "approval",
+    "contract",
+    "wins",
+    "upside",
+}
+NEGATIVE_WORDS = {
+    "miss",
+    "fall",
+    "weak",
+    "lawsuit",
+    "downgrade",
+    "cuts",
+    "bearish",
+    "risk",
+    "decline",
+    "plunge",
+    "fraud",
+    "probe",
+    "investigation",
+    "warning",
+    "bankruptcy",
+    "recall",
+    "cuts guidance",
+    "delay",
+    "default",
+}
+
+DEFAULT_SOURCE_WEIGHTS = {
+    "reuters": 1.35,
+    "bloomberg": 1.35,
+    "wall street journal": 1.3,
+    "wsj": 1.3,
+    "financial times": 1.3,
+    "cnbc": 1.2,
+    "marketwatch": 1.15,
+    "barron": 1.2,
+    "yahoo finance": 1.05,
+    "seeking alpha": 1.0,
+    "benzinga": 0.95,
+    "motley fool": 0.8,
+}
+
+DEFAULT_NEWS_CONFIG = {
+    "half_life_hours": 24.0,
+    "unknown_source_weight": 1.0,
+    "missing_timestamp_weight": 0.5,
+    "min_recency_weight": 0.2,
+    "max_recency_weight": 1.5,
+    "normalization_divisor": 2.5,
+    "min_headline_count": 5,
+    "max_headlines_scored": 40,
+    "source_weights": DEFAULT_SOURCE_WEIGHTS,
+}
+
+DEFAULT_NOTIFICATIONS_CONFIG = {
+    "enabled": True,
+    "channel": "telegram",
+    "telegram_enabled": True,
+    "telegram_chat_id": "",
+    "good_trade_min_score": 0.75,
+    "good_trade_min_rr": 1.5,
+    "cooldown_minutes": 60,
+    "max_alert_items": 3,
+}
+
+DEFAULT_MODEL_PARAMS = {
+    "weights": {
+        "fundamental": 0.4,
+        "technical": 0.45,
+        "news": 0.15,
+    },
+    "regime_bias": {
+        "bullish": 0.1,
+        "neutral": 0.0,
+        "bearish": -0.1,
+    },
+    "thresholds": {
+        "bullish_buy": 0.25,
+        "bullish_short": -0.30,
+        "bearish_buy": 0.45,
+        "bearish_short": -0.15,
+        "bearish_technical_short": -0.20,
+        "neutral_buy": 0.35,
+        "neutral_short": -0.35,
+    },
+    "threshold_adjustments": {
+        "buy": 0.0,
+        "short": 0.0,
+    },
+    "learning": {
+        "enabled": True,
+        "learning_rate": 0.025,
+        "max_weight_abs": 1.2,
+    },
+    "meta": {
+        "last_updated_utc": "",
+        "updates_applied": 0,
+        "last_evaluated_run_id": "",
+    },
+}
+
+FALLBACK_UNIVERSE = [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "TSLA",
+    "AMD",
+    "NFLX",
+    "AVGO",
+    "JPM",
+    "BAC",
+    "XOM",
+    "CVX",
+    "WMT",
+    "COST",
+    "V",
+    "MA",
+    "UNH",
+    "LLY",
+    "HD",
+    "KO",
+    "PFE",
+    "INTC",
+    "PLTR",
+    "SMCI",
+    "MSTR",
+    "COIN",
+    "RIVN",
+    "SOFI",
+    "SHOP",
+    "UBER",
+    "DIS",
+    "CRM",
+    "ORCL",
+    "ADBE",
+    "QCOM",
+    "MU",
+    "PANW",
+    "SNOW",
+    "ABNB",
+    "PYPL",
+    "NKE",
+    "BA",
+    "GE",
+    "CAT",
+    "T",
+    "VZ",
+    "MRNA",
+    "BABA",
+]
+
+STABLE_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "JPM", "V", "MA",
+    "UNH", "LLY", "PG", "KO", "PEP", "XOM", "CVX", "WMT", "COST", "HD",
+    "MCD", "JNJ", "MRK", "ABBV", "TMO", "CRM", "ORCL", "ADBE", "AVGO", "QCOM",
+    "TXN", "NKE", "DIS", "CAT", "GE", "HON", "AMGN", "PFE", "BAC", "GS",
+    "MS", "SCHW", "SPGI", "BLK", "LOW", "NEE", "DUK", "SO", "VZ", "T",
+]
+
+DEFAULT_TRADING_CONFIG = {
+    "stock_only": True,
+    "real_trading_capital": 10000.0,
+    "simulation_initial_capital": 10000.0,
+}
+
+DEFAULT_AGENT_CONFIG = {
+    "news": DEFAULT_NEWS_CONFIG,
+    "notifications": DEFAULT_NOTIFICATIONS_CONFIG,
+    "trading": DEFAULT_TRADING_CONFIG,
+}
+
+
+@dataclass
+class AnalysisRow:
+    symbol: str
+    price: float
+    market_regime: str
+    fundamental_score: float
+    technical_score: float
+    news_score: float
+    upcoming_earnings_days: int
+    earnings_event_score: float
+    market_trend_score: float
+    category_trend_score: float
+    total_score: float
+    action_stock: str
+    action_option: str
+    execution_timing: str
+    entry_price: float
+    target_price: float
+    stop_price: float
+    risk_reward: float
+    option_symbol_hint: str
+    option_expiry: str
+    option_strike: float
+    reason: str
+
+
+@dataclass
+class NewsHeadline:
+    title: str
+    source: str
+    published_ts: float
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp(v: float, low: float, high: float) -> float:
+    return max(low, min(high, v))
+
+
+def load_news_config(path: Path) -> dict[str, Any]:
+    config = {
+        **DEFAULT_NEWS_CONFIG,
+        "source_weights": dict(DEFAULT_SOURCE_WEIGHTS),
+    }
+    if not path.exists():
+        return config
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            user_cfg = json.load(f)
+    except Exception:
+        return config
+
+    if not isinstance(user_cfg, dict):
+        return config
+
+    numeric_keys = {
+        "half_life_hours",
+        "unknown_source_weight",
+        "missing_timestamp_weight",
+        "min_recency_weight",
+        "max_recency_weight",
+        "normalization_divisor",
+    }
+    int_keys = {"min_headline_count", "max_headlines_scored"}
+
+    for key in numeric_keys:
+        if key in user_cfg:
+            try:
+                config[key] = float(user_cfg[key])
+            except (TypeError, ValueError):
+                pass
+    for key in int_keys:
+        if key in user_cfg:
+            try:
+                config[key] = int(user_cfg[key])
+            except (TypeError, ValueError):
+                pass
+
+    source_weights = user_cfg.get("source_weights")
+    if isinstance(source_weights, dict):
+        merged = dict(config["source_weights"])
+        for k, v in source_weights.items():
+            if isinstance(k, str):
+                try:
+                    merged[k.lower()] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        config["source_weights"] = merged
+
+    return config
+
+
+NEWS_CONFIG: dict[str, Any] = dict(DEFAULT_NEWS_CONFIG)
+NOTIFICATIONS_CONFIG: dict[str, Any] = dict(DEFAULT_NOTIFICATIONS_CONFIG)
+TRADING_CONFIG: dict[str, Any] = dict(DEFAULT_TRADING_CONFIG)
+
+
+def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_agent_config(path: Path) -> dict[str, Any]:
+    cfg = json.loads(json.dumps(DEFAULT_AGENT_CONFIG))
+    if path.exists():
+        try:
+            user = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(user, dict):
+                cfg = deep_merge(cfg, user)
+        except Exception:
+            pass
+    return cfg
+
+
+def default_model_params() -> dict[str, Any]:
+    return json.loads(json.dumps(DEFAULT_MODEL_PARAMS))
+
+
+def load_model_params(path: Path = MODEL_STATE_PATH) -> dict[str, Any]:
+    params = default_model_params()
+    if not path.exists():
+        return params
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            user = json.load(f)
+    except Exception:
+        return params
+    if not isinstance(user, dict):
+        return params
+
+    for section in ("weights", "regime_bias", "thresholds", "threshold_adjustments", "learning", "meta"):
+        if isinstance(user.get(section), dict):
+            params[section].update(user[section])
+    return params
+
+
+def save_model_params(params: dict[str, Any], path: Path = MODEL_STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(params, f, indent=2)
+
+
+def compute_total_score(fund: float, tech: float, news: float, regime: str, params: dict[str, Any]) -> float:
+    w = params.get("weights", {})
+    reg = params.get("regime_bias", {})
+    return (
+        safe_float(w.get("fundamental"), 0.4) * fund
+        + safe_float(w.get("technical"), 0.45) * tech
+        + safe_float(w.get("news"), 0.15) * news
+        + safe_float(reg.get(regime), 0.0)
+    )
+
+
+def market_hours_context(now_dt: datetime | None = None) -> dict[str, Any]:
+    current_utc = now_dt or now_utc()
+    now_et = current_utc.astimezone(US_MARKET_TZ)
+    weekday = now_et.weekday()  # Mon=0
+    is_weekday = weekday < 5
+    open_dt = now_et.replace(hour=US_MARKET_OPEN.hour, minute=US_MARKET_OPEN.minute, second=0, microsecond=0)
+    close_dt = now_et.replace(hour=US_MARKET_CLOSE.hour, minute=US_MARKET_CLOSE.minute, second=0, microsecond=0)
+    market_open = is_weekday and open_dt <= now_et <= close_dt
+
+    if market_open:
+        session = "regular"
+        next_open_et = open_dt + timedelta(days=1)
+        while next_open_et.weekday() >= 5:
+            next_open_et += timedelta(days=1)
+        next_open_et = next_open_et.replace(hour=US_MARKET_OPEN.hour, minute=US_MARKET_OPEN.minute, second=0, microsecond=0)
+        next_close_et = close_dt
+    else:
+        if is_weekday and now_et < open_dt:
+            session = "pre_market"
+            next_open_et = open_dt
+        else:
+            session = "after_hours" if is_weekday else "weekend"
+            next_open_et = now_et + timedelta(days=1)
+            while next_open_et.weekday() >= 5:
+                next_open_et += timedelta(days=1)
+            next_open_et = next_open_et.replace(hour=US_MARKET_OPEN.hour, minute=US_MARKET_OPEN.minute, second=0, microsecond=0)
+        next_close_et = next_open_et.replace(hour=US_MARKET_CLOSE.hour, minute=US_MARKET_CLOSE.minute)
+
+    mins_to_open = int((next_open_et - now_et).total_seconds() // 60)
+    mins_to_close = int((next_close_et - now_et).total_seconds() // 60)
+    return {
+        "market_open": market_open,
+        "market_session": session,
+        "market_time_et": now_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "next_open_et": next_open_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "next_close_et": next_close_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "minutes_to_open": max(mins_to_open, 0),
+        "minutes_to_close": max(mins_to_close, 0),
+        "holiday_calendar_applied": False,
+    }
+
+
+def previous_trading_day_et(now_dt: datetime | None = None) -> str:
+    now_et = (now_dt or now_utc()).astimezone(US_MARKET_TZ)
+    d = now_et.date()
+    # If market is open in ET regular hours, previous completed close is prior weekday.
+    if now_et.weekday() < 5 and now_et.time() >= US_MARKET_CLOSE:
+        ref = d
+    else:
+        ref = d - timedelta(days=1)
+    while ref.weekday() >= 5:
+        ref = ref - timedelta(days=1)
+    return ref.strftime("%Y-%m-%d")
+
+
+def post_analyze_and_adapt(base_dir: Path, params: dict[str, Any], enable_after_hours: bool) -> dict[str, Any]:
+    if not params.get("learning", {}).get("enabled", True):
+        return {"status": "disabled"}
+    mkt = market_hours_context()
+
+    runs_dir = base_dir / "runs"
+    if not runs_dir.exists():
+        return {"status": "no_runs"}
+    run_ids: list[str] = []
+    for p in runs_dir.iterdir():
+        if not p.is_dir():
+            continue
+        mc = p / "market_context.json"
+        t10 = p / "top10.csv"
+        if not (mc.exists() and t10.exists()):
+            continue
+        try:
+            ctx = json.loads(mc.read_text(encoding="utf-8"))
+            if str(ctx.get("regime", "")) == "stale_snapshot":
+                continue
+        except Exception:
+            continue
+        run_ids.append(p.name)
+    run_ids = sorted(run_ids)
+    if not run_ids:
+        return {"status": "no_evaluable_runs"}
+
+    last_run_id = run_ids[-1]
+    meta = params.get("meta", {})
+    if str(meta.get("last_evaluated_run_id", "")) == last_run_id:
+        return {"status": "already_evaluated", "evaluated_run_id": last_run_id}
+
+    try:
+        run_dt = datetime.strptime(last_run_id, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+        age_min = int((now_utc() - run_dt).total_seconds() // 60)
+    except Exception:
+        age_min = 10**9
+    if age_min < MIN_LEARNING_AGE_MINUTES:
+        return {"status": "too_fresh", "evaluated_run_id": last_run_id, "age_minutes": age_min}
+
+    last_run = runs_dir / last_run_id
+    top10_path = last_run / "top10.csv"
+    if not top10_path.exists():
+        return {"status": "missing_top10"}
+
+    try:
+        prior = pd.read_csv(top10_path)
+    except Exception:
+        return {"status": "read_error"}
+    if prior.empty:
+        return {"status": "empty_top10"}
+
+    lr = safe_float(params.get("learning", {}).get("learning_rate"), 0.025)
+    max_abs = safe_float(params.get("learning", {}).get("max_weight_abs"), 1.2)
+    weights = params.get("weights", {})
+    thresholds = params.get("threshold_adjustments", {})
+
+    evaluated = 0
+    correct = 0
+    buy_total = 0
+    buy_correct = 0
+    short_total = 0
+    short_correct = 0
+
+    market_open_now = bool(mkt.get("market_open"))
+    if not market_open_now:
+        reference_mode = "market_close"
+    else:
+        reference_mode = "extended_or_intraday" if enable_after_hours else "regular_session_only"
+    for row in prior.to_dict(orient="records"):
+        action = str(row.get("action_stock", ""))
+        if action not in {"BUY_STOCK", "SELL_SHORT"}:
+            continue
+        symbol = str(row.get("symbol", ""))
+        rec_price = safe_float(row.get("price"), 0.0)
+        if not symbol or rec_price <= 0:
+            continue
+        try:
+            if not market_open_now:
+                hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+            else:
+                hist = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=enable_after_hours)
+                if hist.empty:
+                    hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+                    reference_mode = "last_regular_close"
+            if hist.empty:
+                continue
+            now_price = safe_float(hist["Close"].iloc[-1], 0.0)
+            if now_price <= 0:
+                continue
+        except Exception:
+            continue
+
+        ret = (now_price / rec_price) - 1
+        # Ignore micro-noise; require at least 20 bps move to label.
+        if abs(ret) < MIN_RETURN_FOR_LABEL:
+            continue
+        y = 1.0 if ret > 0 else -1.0
+        target = 1.0 if action == "BUY_STOCK" else -1.0
+        is_correct = (y == target)
+        evaluated += 1
+        correct += 1 if is_correct else 0
+
+        if action == "BUY_STOCK":
+            buy_total += 1
+            buy_correct += 1 if is_correct else 0
+        else:
+            short_total += 1
+            short_correct += 1 if is_correct else 0
+
+        fund = safe_float(row.get("fundamental_score"))
+        tech = safe_float(row.get("technical_score"))
+        news = safe_float(row.get("news_score"))
+        regime = str(row.get("market_regime", "neutral"))
+
+        pred_score = compute_total_score(fund, tech, news, regime, params)
+        pred = max(-1.0, min(1.0, pred_score))
+        err = y - pred
+
+        weights["fundamental"] = clamp(safe_float(weights.get("fundamental"), 0.4) + lr * err * fund, -max_abs, max_abs)
+        weights["technical"] = clamp(safe_float(weights.get("technical"), 0.45) + lr * err * tech, -max_abs, max_abs)
+        weights["news"] = clamp(safe_float(weights.get("news"), 0.15) + lr * err * news, -max_abs, max_abs)
+
+    if buy_total >= 2:
+        buy_acc = buy_correct / buy_total
+        if buy_acc < 0.5:
+            thresholds["buy"] = clamp(safe_float(thresholds.get("buy"), 0.0) + 0.02, -0.3, 0.3)
+        elif buy_acc > 0.65:
+            thresholds["buy"] = clamp(safe_float(thresholds.get("buy"), 0.0) - 0.01, -0.3, 0.3)
+
+    if short_total >= 2:
+        short_acc = short_correct / short_total
+        if short_acc < 0.5:
+            thresholds["short"] = clamp(safe_float(thresholds.get("short"), 0.0) - 0.02, -0.3, 0.3)
+        elif short_acc > 0.65:
+            thresholds["short"] = clamp(safe_float(thresholds.get("short"), 0.0) + 0.01, -0.3, 0.3)
+
+    if evaluated == 0:
+        params.setdefault("meta", {})
+        params["meta"]["last_updated_utc"] = now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+        params["meta"]["last_evaluated_run_id"] = last_run_id
+        save_model_params(params)
+        return {
+            "status": "no_evaluable_rows",
+            "evaluated_run_id": last_run_id,
+            "market_session": mkt.get("market_session"),
+            "price_reference_mode": reference_mode,
+        }
+
+    params["weights"] = weights
+    params["threshold_adjustments"] = thresholds
+    params.setdefault("meta", {})
+    params["meta"]["last_updated_utc"] = now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    params["meta"]["updates_applied"] = int(params["meta"].get("updates_applied", 0)) + 1
+    params["meta"]["last_evaluated_run_id"] = last_run_id
+
+    save_model_params(params)
+    return {
+        "status": "updated",
+        "evaluated_run_id": last_run_id,
+        "market_session": mkt.get("market_session"),
+        "price_reference_mode": reference_mode,
+        "evaluated": evaluated,
+        "correct": correct,
+        "accuracy": round(correct / evaluated, 4),
+        "buy_accuracy": round(buy_correct / buy_total, 4) if buy_total else None,
+        "short_accuracy": round(short_correct / short_total, 4) if short_total else None,
+        "weights": {
+            "fundamental": round(safe_float(weights.get("fundamental"), 0.0), 4),
+            "technical": round(safe_float(weights.get("technical"), 0.0), 4),
+            "news": round(safe_float(weights.get("news"), 0.0), 4),
+        },
+        "threshold_adjustments": {
+            "buy": round(safe_float(thresholds.get("buy"), 0.0), 4),
+            "short": round(safe_float(thresholds.get("short"), 0.0), 4),
+        },
+    }
+
+
+def save_post_analysis(base_dir: Path, summary: dict[str, Any]) -> None:
+    history_dir = base_dir / "history"
+    latest_dir = base_dir / "latest"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    latest_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "timestamp_utc": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **summary,
+    }
+    with (latest_dir / "post_analysis.json").open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    with (history_dir / "post_analysis_history.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+
+
+def fetch_top_gainers(count: int = 50) -> list[str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    params = {
+        "formatted": "false",
+        "scrIds": "day_gainers",
+        "count": str(count),
+        "start": "0",
+    }
+
+    for base_url in (YAHOO_SCREENER_URL, YAHOO_SCREENER_URL_ALT):
+        for attempt in range(3):
+            try:
+                r = requests.get(base_url, params=params, headers=headers, timeout=20)
+                if r.status_code == 429:
+                    time.sleep(1.5 + attempt + random.random())
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                quotes = data["finance"]["result"][0]["quotes"]
+                out = []
+                for q in quotes:
+                    sym = q.get("symbol")
+                    if sym and isinstance(sym, str):
+                        out.append(sym.upper())
+                out = filter_equity_symbols(out)
+                if out:
+                    return merge_with_fallback(out, count)
+            except Exception:
+                time.sleep(1 + random.random())
+
+    try:
+        page = requests.get(YAHOO_GAINERS_PAGE, headers=headers, timeout=20)
+        page.raise_for_status()
+        html = page.text
+        parsed = re.findall(r'"symbol":"([A-Z.\\-]{1,12})"', html)
+        if parsed:
+            unique = list(dict.fromkeys(parsed))
+            unique = filter_equity_symbols(unique)
+            if unique:
+                return merge_with_fallback(unique, count)
+    except Exception:
+        pass
+
+    return fallback_top_movers(count)
+
+
+def filter_equity_symbols(symbols: list[str]) -> list[str]:
+    out = []
+    for sym in symbols:
+        if not sym:
+            continue
+        if "-" in sym or "^" in sym or "=" in sym or "/" in sym:
+            continue
+        if len(sym) > 6:
+            continue
+        out.append(sym)
+    return list(dict.fromkeys(out))
+
+
+def merge_with_fallback(symbols: list[str], count: int) -> list[str]:
+    if len(symbols) >= count:
+        return symbols[:count]
+    missing = count - len(symbols)
+    fallback = [s for s in fallback_top_movers(count + 20) if s not in symbols]
+    return (symbols + fallback[:missing])[:count]
+
+
+def fallback_top_movers(count: int) -> list[str]:
+    scores: list[tuple[str, float]] = []
+    for sym in FALLBACK_UNIVERSE:
+        try:
+            hist = yf.Ticker(sym).history(period="1mo", interval="1d")
+            if len(hist) < 6:
+                continue
+            c = hist["Close"]
+            ret5 = (c.iloc[-1] / c.iloc[-6]) - 1
+            scores.append((sym, float(ret5)))
+        except Exception:
+            continue
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [sym for sym, _ in scores[:count]]
+
+
+def market_regime() -> tuple[str, dict[str, float]]:
+    try:
+        spy = yf.Ticker("SPY").history(period="1y", interval="1d")
+        qqq = yf.Ticker("QQQ").history(period="1y", interval="1d")
+    except Exception:
+        return "neutral", {"market_data_error": 1.0}
+    if len(spy) < 210 or len(qqq) < 210:
+        return "neutral", {"market_data_error": 1.0}
+
+    def regime_for(df: pd.DataFrame) -> tuple[float, float]:
+        close = df["Close"]
+        sma50 = close.rolling(50).mean().iloc[-1]
+        sma200 = close.rolling(200).mean().iloc[-1]
+        ret20 = (close.iloc[-1] / close.iloc[-20]) - 1
+        trend = 1.0 if sma50 > sma200 else -1.0
+        return trend, ret20
+
+    t1, r1 = regime_for(spy)
+    t2, r2 = regime_for(qqq)
+    regime_score = (t1 + t2) / 2 + (r1 + r2)
+    if regime_score > 0.4:
+        regime = "bullish"
+    elif regime_score < -0.4:
+        regime = "bearish"
+    else:
+        regime = "neutral"
+    return regime, {"spy_20d_return": r1, "qqq_20d_return": r2, "regime_score": regime_score}
+
+
+def market_trend_score(regime: str, ctx: dict[str, Any]) -> float:
+    base = {"bullish": 0.6, "neutral": 0.0, "bearish": -0.6}.get(regime, 0.0)
+    spy_ret = safe_float(ctx.get("spy_20d_return"), 0.0)
+    qqq_ret = safe_float(ctx.get("qqq_20d_return"), 0.0)
+    momentum = clamp((spy_ret + qqq_ret) / 0.12, -1, 1)
+    return round(clamp(0.6 * base + 0.4 * momentum, -1, 1), 4)
+
+
+def next_earnings_days(ticker: yf.Ticker, info: dict[str, Any]) -> int:
+    now_ts = now_utc().timestamp()
+    candidates: list[float] = []
+
+    for k in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
+        v = safe_float(info.get(k), 0.0)
+        if v > now_ts:
+            candidates.append(v)
+
+    try:
+        cal = ticker.calendar
+        if cal is not None:
+            if isinstance(cal, pd.DataFrame):
+                for v in cal.to_numpy().flatten().tolist():
+                    try:
+                        dt = pd.to_datetime(v, utc=True)
+                        if pd.notna(dt):
+                            ts = float(dt.timestamp())
+                            if ts > now_ts:
+                                candidates.append(ts)
+                    except Exception:
+                        continue
+            elif isinstance(cal, dict):
+                for v in cal.values():
+                    try:
+                        dt = pd.to_datetime(v, utc=True)
+                        if pd.notna(dt):
+                            ts = float(dt.timestamp())
+                            if ts > now_ts:
+                                candidates.append(ts)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+    try:
+        ed = ticker.earnings_dates
+        if isinstance(ed, pd.DataFrame) and not ed.empty:
+            for idx in ed.index.tolist()[:8]:
+                try:
+                    dt = pd.to_datetime(idx, utc=True)
+                    if pd.notna(dt):
+                        ts = float(dt.timestamp())
+                        if ts > now_ts:
+                            candidates.append(ts)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    if not candidates:
+        return -1
+    next_ts = min(candidates)
+    return max(0, int((next_ts - now_ts) // 86400))
+
+
+def earnings_outlook_score(info: dict[str, Any]) -> float:
+    eg = safe_float(info.get("earningsQuarterlyGrowth"), safe_float(info.get("earningsGrowth"), 0.0))
+    rg = safe_float(info.get("revenueGrowth"), 0.0)
+    rec = safe_float(info.get("recommendationMean"), 3.0)  # 1(best) .. 5(worst)
+    eg_c = clamp((eg + 0.05) / 0.25, 0.0, 1.0)
+    rg_c = clamp((rg + 0.03) / 0.18, 0.0, 1.0)
+    rec_c = clamp((3.2 - rec) / 1.8, 0.0, 1.0)
+    return round(clamp(0.45 * eg_c + 0.30 * rg_c + 0.25 * rec_c, 0.0, 1.0), 4)
+
+
+def price_setup_score(hist: pd.DataFrame, price: float) -> float:
+    if len(hist) < 60 or price <= 0:
+        return 0.0
+    close = hist["Close"]
+    sma20 = safe_float(close.rolling(20).mean().iloc[-1], price)
+    sma50 = safe_float(close.rolling(50).mean().iloc[-1], price)
+    rsi14 = rsi(close, 14)
+    trend_c = 1.0 if price >= sma50 else 0.2
+    # Favor reasonable entry zones (not deeply oversold/overbought).
+    rsi_c = 1.0 - clamp(abs(rsi14 - 55.0) / 30.0, 0.0, 1.0)
+    dist20 = abs(price - sma20) / max(1e-6, sma20)
+    meanrev_c = 1.0 - clamp(dist20 / 0.12, 0.0, 1.0)
+    return round(clamp(0.45 * trend_c + 0.30 * rsi_c + 0.25 * meanrev_c, 0.0, 1.0), 4)
+
+
+def earnings_event_score(
+    days_to_earnings: int,
+    fund: float,
+    tech: float,
+    news: float,
+    regime: str,
+    outlook_score: float,
+    price_score: float,
+) -> float:
+    # Pre-earnings accumulation window: up to 30 days before event, weighted by proximity and quality.
+    if days_to_earnings < 0:
+        return 0.0
+    if days_to_earnings <= 1:
+        return 0.0
+    if days_to_earnings > 30:
+        return 0.0
+
+    fund_c = clamp((fund + 0.2) / 0.8, 0.0, 1.0)
+    tech_c = clamp((tech + 0.2) / 0.8, 0.0, 1.0)
+    news_c = clamp((news + 0.08) / 0.24, 0.0, 1.0)
+    quality = clamp(
+        0.20 * fund_c + 0.20 * tech_c + 0.10 * news_c + 0.30 * outlook_score + 0.20 * price_score,
+        0.0,
+        1.0,
+    )
+    proximity = clamp((30 - days_to_earnings) / 28.0, 0.0, 1.0)
+    regime_factor = 0.55 if regime == "bearish" else 1.0
+    return round(clamp(quality * (0.55 + 0.45 * proximity) * regime_factor, 0.0, 1.0), 4)
+
+
+def build_category_context() -> dict[str, float]:
+    # Sector ETFs + macro proxies for world/oil backdrop.
+    symbols = {
+        "Technology": "XLK",
+        "Financial Services": "XLF",
+        "Financial": "XLF",
+        "Healthcare": "XLV",
+        "Consumer Defensive": "XLP",
+        "Consumer Cyclical": "XLY",
+        "Industrials": "XLI",
+        "Utilities": "XLU",
+        "Real Estate": "XLRE",
+        "Energy": "XLE",
+        "Basic Materials": "XLB",
+        "Communication Services": "XLC",
+        "world": "VT",
+        "oil": "USO",
+    }
+    out: dict[str, float] = {}
+    for key, ticker in symbols.items():
+        try:
+            h = yf.Ticker(ticker).history(period="2mo", interval="1d")
+            if len(h) >= 21:
+                c = h["Close"]
+                out[key] = safe_float((c.iloc[-1] / c.iloc[-20]) - 1, 0.0)
+            else:
+                out[key] = 0.0
+        except Exception:
+            out[key] = 0.0
+    return out
+
+
+def category_trend_score(info: dict[str, Any], category_ctx: dict[str, float]) -> float:
+    sector = str(info.get("sector", "")).strip()
+    sector_ret = safe_float(category_ctx.get(sector), 0.0)
+    world_ret = safe_float(category_ctx.get("world"), 0.0)
+    oil_ret = safe_float(category_ctx.get("oil"), 0.0)
+    oil_component = oil_ret if sector == "Energy" else 0.0
+    raw = 0.65 * sector_ret + 0.25 * world_ret + 0.10 * oil_component
+    return round(clamp(raw / 0.08, -1, 1), 4)
+
+
+def fundamental_score(info: dict[str, Any]) -> tuple[float, str]:
+    pe = safe_float(info.get("trailingPE"), 40)
+    margin = safe_float(info.get("profitMargins"))
+    roe = safe_float(info.get("returnOnEquity"))
+    rev_growth = safe_float(info.get("revenueGrowth"))
+    debt_to_equity = safe_float(info.get("debtToEquity"), 200)
+
+    pe_score = clamp((30 - pe) / 30, -1, 1)
+    margin_score = clamp(margin / 0.25, -1, 1)
+    roe_score = clamp(roe / 0.3, -1, 1)
+    growth_score = clamp(rev_growth / 0.3, -1, 1)
+    debt_score = clamp((100 - debt_to_equity) / 100, -1, 1)
+
+    total = 0.2 * pe_score + 0.2 * margin_score + 0.2 * roe_score + 0.25 * growth_score + 0.15 * debt_score
+    reason = (
+        f"PE={pe:.1f}, margin={margin:.2f}, ROE={roe:.2f}, "
+        f"rev_growth={rev_growth:.2f}, debt_to_equity={debt_to_equity:.1f}"
+    )
+    return total, reason
+
+
+def rsi(series: pd.Series, period: int = 14) -> float:
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, pd.NA)
+    values = 100 - (100 / (1 + rs))
+    out = values.iloc[-1]
+    return float(out) if pd.notna(out) else 50.0
+
+
+def technical_score(hist: pd.DataFrame) -> tuple[float, str]:
+    if len(hist) < 210:
+        return 0.0, "insufficient_history"
+    close = hist["Close"]
+    sma20 = close.rolling(20).mean().iloc[-1]
+    sma50 = close.rolling(50).mean().iloc[-1]
+    sma200 = close.rolling(200).mean().iloc[-1]
+    mom20 = (close.iloc[-1] / close.iloc[-20]) - 1
+    rsi14 = rsi(close, 14)
+    vol = close.pct_change().rolling(20).std().iloc[-1]
+
+    trend = clamp((sma20 - sma50) / sma50 * 10, -1, 1) + clamp((sma50 - sma200) / sma200 * 8, -1, 1)
+    momentum = clamp(mom20 / 0.2, -1, 1)
+    rsi_component = clamp((rsi14 - 50) / 25, -1, 1)
+    volatility_penalty = clamp(vol / 0.05, 0, 2)
+    total = 0.4 * trend + 0.35 * momentum + 0.25 * rsi_component - 0.1 * volatility_penalty
+    reason = (
+        f"sma20={sma20:.2f}, sma50={sma50:.2f}, sma200={sma200:.2f}, "
+        f"mom20={mom20:.2%}, rsi14={rsi14:.1f}, vol20={vol:.2%}"
+    )
+    return total, reason
+
+
+def vol20(hist: pd.DataFrame) -> float:
+    try:
+        return safe_float(hist["Close"].pct_change().rolling(20).std().iloc[-1], 0.0)
+    except Exception:
+        return 0.0
+
+
+def conservative_gate(symbol: str, info: dict[str, Any], hist: pd.DataFrame, price: float) -> tuple[bool, str]:
+    if not CONSERVATIVE_PROFILE:
+        return True, "profile_off"
+    market_cap = safe_float(info.get("marketCap"), 0.0)
+    avg_vol = safe_float(info.get("averageVolume"), 0.0)
+    beta = abs(safe_float(info.get("beta"), 1.0))
+    v20 = vol20(hist)
+    checks = {
+        "mcap": market_cap >= MIN_MARKET_CAP,
+        "avg_vol": avg_vol >= MIN_AVG_VOLUME,
+        "price": price >= MIN_PRICE,
+        "vol20": v20 <= MAX_VOL20 if v20 > 0 else True,
+        "beta": beta <= MAX_BETA if beta > 0 else True,
+    }
+    ok = all(checks.values())
+    # Weekend/off-hours resilience: if metadata is unavailable but symbol is in stable universe,
+    # allow analysis using historical price/volume behavior instead of rejecting all rows.
+    if (market_cap <= 0 or avg_vol <= 0) and symbol in STABLE_UNIVERSE and len(hist) >= 200 and price >= MIN_PRICE:
+        if (v20 <= MAX_VOL20 if v20 > 0 else True) and (beta <= MAX_BETA if beta > 0 else True):
+            return True, "gate_fallback(stable_symbol_missing_info)"
+    reason = (
+        f"gate(mcap={market_cap:.0f},avg_vol={avg_vol:.0f},price={price:.2f},"
+        f"vol20={v20:.2%},beta={beta:.2f})"
+    )
+    return ok, reason
+
+
+def conservative_option_allowed(
+    total: float, stock_action: str, market_cap: float, v20: float, beta: float, regime: str
+) -> bool:
+    if stock_action not in {"BUY_STOCK", "SELL_SHORT"}:
+        return False
+    if market_cap < 100_000_000_000:
+        return False
+    if v20 > 0.025 or beta > 1.4:
+        return False
+    if regime == "bearish":
+        return total <= -0.95
+    return total >= 0.9
+
+
+def news_sentiment(symbol: str, news_items: list[dict[str, Any]]) -> tuple[float, str]:
+    headlines: list[NewsHeadline] = []
+    for item in news_items[:20]:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        publisher = str(item.get("publisher") or item.get("provider") or "unknown")
+        publish_time = safe_float(item.get("providerPublishTime"))
+        headlines.append(NewsHeadline(title=title, source=publisher, published_ts=publish_time))
+
+    web_headlines = fetch_web_news_headlines(symbol, limit=20)
+    headlines.extend(web_headlines)
+    return score_headline_sentiment(headlines)
+
+
+def fetch_web_news_headlines(symbol: str, limit: int = 20) -> list[NewsHeadline]:
+    if not symbol:
+        return []
+    query = quote_plus(f"{symbol} stock")
+    urls = [
+        f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote_plus(symbol)}&region=US&lang=en-US",
+        f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+    ]
+    headlines: list[NewsHeadline] = []
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            root = ET.fromstring(r.text)
+            for item in root.findall(".//item"):
+                title_el = item.find("title")
+                if title_el is None or title_el.text is None:
+                    continue
+                title = title_el.text.strip()
+                if not title:
+                    continue
+                source = "unknown"
+                source_el = item.find("source")
+                if source_el is not None and source_el.text:
+                    source = source_el.text.strip()
+                elif "news.google.com" in url and " - " in title:
+                    source = title.rsplit(" - ", 1)[-1].strip()
+                pub_ts = parse_rss_pubdate(item.findtext("pubDate", default=""))
+                headlines.append(NewsHeadline(title=title, source=source, published_ts=pub_ts))
+        except Exception:
+            continue
+    deduped: list[NewsHeadline] = []
+    seen: set[str] = set()
+    for h in headlines:
+        key = normalize_headline(h.title)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(h)
+    return deduped[:limit]
+
+
+def parse_rss_pubdate(value: str) -> float:
+    if not value:
+        return 0.0
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def normalize_headline(title: str) -> str:
+    t = title.lower().strip()
+    return re.sub(r"\s+", " ", t)
+
+
+def source_weight(source: str) -> float:
+    s = (source or "").lower()
+    source_weights = NEWS_CONFIG.get("source_weights", DEFAULT_SOURCE_WEIGHTS)
+    for key, weight in source_weights.items():
+        if key in s:
+            return weight
+    return safe_float(NEWS_CONFIG.get("unknown_source_weight"), 1.0)
+
+
+def recency_weight(published_ts: float, now_ts: float) -> float:
+    if published_ts <= 0:
+        return safe_float(NEWS_CONFIG.get("missing_timestamp_weight"), 0.5)
+    age_hours = max(0.0, (now_ts - published_ts) / 3600)
+    half_life = max(1.0, safe_float(NEWS_CONFIG.get("half_life_hours"), 24.0))
+    decay = 0.5 ** (age_hours / half_life)
+    min_w = safe_float(NEWS_CONFIG.get("min_recency_weight"), 0.2)
+    max_w = safe_float(NEWS_CONFIG.get("max_recency_weight"), 1.5)
+    return clamp(decay, min_w, max_w)
+
+
+def score_headline_sentiment(headlines: list[NewsHeadline]) -> tuple[float, str]:
+    if not headlines:
+        return 0.0, "no_recent_news"
+    min_count = max(1, int(NEWS_CONFIG.get("min_headline_count", 5)))
+    if len(headlines) < min_count:
+        return 0.0, f"insufficient_headlines={len(headlines)}/{min_count}"
+
+    weighted_score = 0.0
+    total_weight = 0.0
+    checked = 0
+    now_ts = now_utc().timestamp()
+    max_scored = max(1, int(NEWS_CONFIG.get("max_headlines_scored", 40)))
+    for headline in headlines[:max_scored]:
+        t = headline.title.lower()
+        p = sum(1 for w in POSITIVE_WORDS if w in t)
+        n = sum(1 for w in NEGATIVE_WORDS if w in t)
+        base = p - n
+        w = source_weight(headline.source) * recency_weight(headline.published_ts, now_ts)
+        weighted_score += base * w
+        total_weight += w
+        checked += 1
+
+    if checked == 0 or total_weight <= 0:
+        return 0.0, "no_parsable_headlines"
+    raw = weighted_score / total_weight
+    divisor = max(0.1, safe_float(NEWS_CONFIG.get("normalization_divisor"), 2.5))
+    normalized = clamp(raw / divisor, -1, 1)
+    return normalized, f"headline_sentiment={raw:.2f} weighted from {checked} headlines"
+
+
+def pick_option_candidate(ticker: yf.Ticker, action_option: str, underlying_price: float) -> tuple[str, str, float]:
+    if action_option not in {"BUY_CALL", "BUY_PUT"}:
+        return "", "", 0.0
+    try:
+        expirations = list(ticker.options)
+        if not expirations:
+            return "", "", 0.0
+        exp = expirations[0]
+        chain = ticker.option_chain(exp)
+        table = chain.calls if action_option == "BUY_CALL" else chain.puts
+        if table.empty:
+            return "", exp, 0.0
+        table = table.copy()
+        table["distance"] = (table["strike"] - underlying_price).abs()
+        table = table.sort_values(["distance", "openInterest", "volume"], ascending=[True, False, False])
+        row = table.iloc[0]
+        contract_symbol = str(row.get("contractSymbol", ""))
+        strike = safe_float(row.get("strike"))
+        return contract_symbol, exp, strike
+    except Exception:
+        return "", "", 0.0
+
+
+def decide_actions(regime: str, total: float, technical: float, params: dict[str, Any]) -> tuple[str, str]:
+    th = params.get("thresholds", {})
+    adj = params.get("threshold_adjustments", {})
+    buy_adj = safe_float(adj.get("buy"), 0.0)
+    short_adj = safe_float(adj.get("short"), 0.0)
+
+    if regime == "bullish":
+        bullish_buy = safe_float(th.get("bullish_buy"), 0.25) + buy_adj
+        bullish_short = safe_float(th.get("bullish_short"), -0.30) + short_adj
+        if total >= bullish_buy:
+            return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
+        if (not CONSERVATIVE_PROFILE) and total <= bullish_short:
+            return "SELL_SHORT", "BUY_PUT"
+        return "HOLD", "NO_OPTION"
+
+    if regime == "bearish":
+        bearish_buy = safe_float(th.get("bearish_buy"), 0.45) + buy_adj
+        bearish_short = safe_float(th.get("bearish_short"), -0.15) + short_adj
+        bearish_tech_short = safe_float(th.get("bearish_technical_short"), -0.2)
+        if ((not CONSERVATIVE_PROFILE) and (total <= bearish_short or technical < bearish_tech_short)) or (
+            CONSERVATIVE_PROFILE and total <= -0.95 and technical < -0.8
+        ):
+            return "SELL_SHORT", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_PUT"
+        if total >= bearish_buy:
+            return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
+        return "HOLD", "NO_OPTION"
+
+    neutral_buy = safe_float(th.get("neutral_buy"), 0.35) + buy_adj
+    neutral_short = safe_float(th.get("neutral_short"), -0.35) + short_adj
+    if total >= neutral_buy:
+        return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
+    if (not CONSERVATIVE_PROFILE) and total <= neutral_short:
+        return "SELL_SHORT", "BUY_PUT"
+    return "HOLD", "NO_OPTION"
+
+
+def trade_levels(hist: pd.DataFrame, price: float, action_stock: str) -> tuple[float, float, float, float]:
+    if action_stock not in {"BUY_STOCK", "SELL_SHORT"}:
+        return 0.0, 0.0, 0.0, 0.0
+    atr = 0.0
+    try:
+        high = hist["High"]
+        low = hist["Low"]
+        close = hist["Close"]
+        prev_close = close.shift(1)
+        tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        atr = safe_float(tr.rolling(14).mean().iloc[-1], 0.0)
+    except Exception:
+        atr = 0.0
+    if atr <= 0:
+        vol20 = safe_float(hist["Close"].pct_change().rolling(20).std().iloc[-1], 0.02)
+        atr = max(price * vol20, price * 0.01)
+
+    if action_stock == "BUY_STOCK":
+        entry = price * 0.997
+        stop = entry - 1.2 * atr
+        target = entry + 2.0 * atr
+    else:
+        entry = price * 1.003
+        stop = entry + 1.2 * atr
+        target = entry - 2.0 * atr
+
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    rr = reward / risk if risk > 0 else 0.0
+    return round(entry, 4), round(target, 4), round(stop, 4), round(rr, 3)
+
+
+def latest_trade_price(ticker: yf.Ticker, daily_hist: pd.DataFrame, enable_after_hours: bool, market_open: bool) -> float:
+    # When market is closed, anchor to regular close.
+    if not market_open:
+        return safe_float(daily_hist["Close"].iloc[-1], 0.0)
+    # During market session, prefer intraday print. Extended-hours is optional.
+    try:
+        intraday = ticker.history(period="1d", interval="1m", prepost=enable_after_hours, auto_adjust=False)
+        if not intraday.empty:
+            p = safe_float(intraday["Close"].iloc[-1], 0.0)
+            if p > 0:
+                return p
+    except Exception:
+        pass
+    return safe_float(daily_hist["Close"].iloc[-1], 0.0)
+
+
+def analyze_symbol(
+    symbol: str,
+    regime: str,
+    params: dict[str, Any],
+    market_open: bool,
+    enable_after_hours: bool,
+    mkt_score: float,
+    category_ctx: dict[str, float],
+) -> AnalysisRow | None:
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
+        if hist.empty:
+            return None
+        price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
+        info = ticker.info or {}
+        news_items = ticker.news or []
+        gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
+        if not gate_ok:
+            return None
+
+        fund, fund_reason = fundamental_score(info)
+        tech, tech_reason = technical_score(hist)
+        news, news_reason = news_sentiment(symbol, news_items)
+        earnings_days = next_earnings_days(ticker, info)
+        outlook_score = earnings_outlook_score(info)
+        price_score = price_setup_score(hist, price)
+        earn_score = earnings_event_score(earnings_days, fund, tech, news, regime, outlook_score, price_score)
+        cat_score = category_trend_score(info, category_ctx)
+
+        base_total = compute_total_score(fund, tech, news, regime, params)
+        total = base_total + 0.12 * mkt_score + 0.08 * cat_score + 0.10 * earn_score
+
+        stock_action, option_action = decide_actions(regime, total, tech, params)
+        mcap = safe_float(info.get("marketCap"), 0.0)
+        beta = abs(safe_float(info.get("beta"), 1.0))
+        v20 = vol20(hist)
+        if TRADING_CONFIG.get("stock_only", True):
+            option_action = "NO_OPTION"
+        elif CONSERVATIVE_PROFILE and not conservative_option_allowed(total, stock_action, mcap, v20, beta, regime):
+            option_action = "NO_OPTION"
+        if gate_ok and stock_action == "HOLD" and regime != "bearish" and 2 <= earnings_days <= 30:
+            near_earnings_ok = earnings_days <= 10 and earn_score >= 0.55
+            far_earnings_ok = earnings_days > 10 and earn_score >= 0.72
+            if (near_earnings_ok or far_earnings_ok) and outlook_score >= 0.45 and price_score >= 0.45:
+                stock_action = "BUY_STOCK"
+                option_action = "NO_OPTION"
+        entry_price, target_price, stop_price, rr = trade_levels(hist, price, stock_action)
+        option_symbol, option_expiry, option_strike = pick_option_candidate(ticker, option_action, price)
+        execution_timing = "NOW" if market_open else "NEXT_MARKET_OPEN"
+
+        reason = " | ".join(
+            [
+                gate_reason,
+                fund_reason,
+                tech_reason,
+                news_reason,
+                f"earnings_days={earnings_days}, earnings_event_score={earn_score:.2f}, earnings_outlook_score={outlook_score:.2f}, price_setup_score={price_score:.2f}",
+            ]
+        )
+        return AnalysisRow(
+            symbol=symbol,
+            price=round(price, 4),
+            market_regime=regime,
+            fundamental_score=round(fund, 4),
+            technical_score=round(tech, 4),
+            news_score=round(news, 4),
+            upcoming_earnings_days=earnings_days,
+            earnings_event_score=round(earn_score, 4),
+            market_trend_score=round(mkt_score, 4),
+            category_trend_score=round(cat_score, 4),
+            total_score=round(total, 4),
+            action_stock=stock_action,
+            action_option=option_action,
+            execution_timing=execution_timing,
+            entry_price=entry_price,
+            target_price=target_price,
+            stop_price=stop_price,
+            risk_reward=rr,
+            option_symbol_hint=option_symbol,
+            option_expiry=option_expiry,
+            option_strike=round(option_strike, 4),
+            reason=reason,
+        )
+    except Exception:
+        return None
+
+
+def ensure_dirs(base_dir: Path) -> dict[str, Path]:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    runs = base_dir / "runs"
+    history = base_dir / "history"
+    portfolio = base_dir / "portfolio"
+    runs.mkdir(parents=True, exist_ok=True)
+    history.mkdir(parents=True, exist_ok=True)
+    portfolio.mkdir(parents=True, exist_ok=True)
+    return {"runs": runs, "history": history, "portfolio": portfolio}
+
+
+def find_last_available_snapshot(base_dir: Path) -> tuple[Path | None, Path | None]:
+    # Prefer current base latest first.
+    current_csv = base_dir / "latest" / "top10.csv"
+    current_md = base_dir / "latest" / "top10.md"
+    if current_csv.exists():
+        return current_csv, (current_md if current_md.exists() else None)
+
+    # Then search sibling daily folders for the latest available snapshot.
+    # Expected layout: data/daily/YYYYMMDD/
+    parent = base_dir.parent
+    if not parent.exists():
+        return None, None
+    candidates: list[Path] = []
+    for p in parent.iterdir():
+        if not p.is_dir():
+            continue
+        latest_csv = p / "latest" / "top10.csv"
+        if latest_csv.exists():
+            candidates.append(latest_csv)
+    if not candidates:
+        return None, None
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+    csv_path = candidates[0]
+    md_path = csv_path.parent / "top10.md"
+    return csv_path, (md_path if md_path.exists() else None)
+
+
+def portfolio_default_state() -> dict[str, Any]:
+    return {
+        "initial_capital": INITIAL_CAPITAL,
+        "cash": INITIAL_CAPITAL,
+        "equity": INITIAL_CAPITAL,
+        "run_count": 0,
+        "open_positions": [],
+        "closed_positions_count": 0,
+        "last_updated_utc": "",
+    }
+
+
+def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
+    path = PORTFOLIO_STATE_PATH
+    if not path.exists():
+        # Legacy daily state fallback/migration path.
+        legacy = base_dir / "portfolio" / "state.json"
+        if legacy.exists():
+            try:
+                data = json.loads(legacy.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    out = portfolio_default_state()
+                    out.update(data)
+                    if not isinstance(out.get("open_positions"), list):
+                        out["open_positions"] = []
+                    return out
+            except Exception:
+                pass
+        return portfolio_default_state()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return portfolio_default_state()
+    if not isinstance(data, dict):
+        return portfolio_default_state()
+    out = portfolio_default_state()
+    out.update(data)
+    if not isinstance(out.get("open_positions"), list):
+        out["open_positions"] = []
+    return out
+
+
+def save_portfolio_state(base_dir: Path, state: dict[str, Any]) -> None:
+    path = PORTFOLIO_STATE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def set_simulation_budget(base_dir: Path, balance: float) -> dict[str, Any]:
+    b = max(0.0, round(float(balance), 4))
+    state = load_portfolio_state(base_dir)
+    state["initial_capital"] = b
+    state["cash"] = b
+    state["equity"] = b
+    state["run_count"] = 0
+    state["open_positions"] = []
+    state["closed_positions_count"] = 0
+    state["last_updated_utc"] = now_utc().strftime("%Y%m%d_%H%M%S")
+    save_portfolio_state(base_dir, state)
+    return state
+
+
+def fetch_symbol_price(symbol: str, enable_after_hours: bool) -> float:
+    try:
+        t = yf.Ticker(symbol)
+        intraday = t.history(period="1d", interval="1m", prepost=enable_after_hours, auto_adjust=False)
+        if not intraday.empty:
+            p = safe_float(intraday["Close"].iloc[-1], 0.0)
+            if p > 0:
+                return p
+        daily = t.history(period="5d", interval="1d", auto_adjust=False)
+        if not daily.empty:
+            p = safe_float(daily["Close"].iloc[-1], 0.0)
+            if p > 0:
+                return p
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def mark_position_value(position: dict[str, Any], current_price: float) -> float:
+    entry_price = max(0.0001, safe_float(position.get("entry_underlying_price"), 0.0))
+    alloc = max(0.0, safe_float(position.get("capital_allocated"), 0.0))
+    direction = 1.0 if str(position.get("direction")) == "LONG" else -1.0
+    leverage = max(1.0, safe_float(position.get("leverage"), 1.0))
+    ret = (current_price / entry_price) - 1.0
+    gross = 1.0 + (direction * leverage * ret)
+    return round(max(0.0, alloc * gross), 4)
+
+
+def should_close_position(position: dict[str, Any], current_price: float) -> tuple[bool, str]:
+    direction = str(position.get("direction", "LONG"))
+    stop = safe_float(position.get("stop_price"), 0.0)
+    target = safe_float(position.get("target_price"), 0.0)
+    hold_runs = int(position.get("hold_runs", 0))
+    instrument = str(position.get("instrument", "STOCK"))
+    max_hold = MAX_HOLD_RUNS_OPTION if instrument == "OPTION" else MAX_HOLD_RUNS_STOCK
+    if hold_runs >= max_hold:
+        return True, "max_hold"
+    if direction == "LONG":
+        if stop > 0 and current_price <= stop:
+            return True, "stop"
+        if target > 0 and current_price >= target:
+            return True, "target"
+    else:
+        if stop > 0 and current_price >= stop:
+            return True, "stop"
+        if target > 0 and current_price <= target:
+            return True, "target"
+    return False, ""
+
+
+def append_equity_curve(base_dir: Path, row: dict[str, Any]) -> None:
+    path = base_dir / "history" / "equity_curve.csv"
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def append_trade_events(base_dir: Path, events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    path = base_dir / "history" / "trades_log.csv"
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(events[0].keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(events)
+
+
+def should_generate_daily_summary(now_et: datetime) -> bool:
+    # Generate after market close window (16:00 ET onward) on weekdays.
+    return now_et.weekday() < 5 and now_et.hour >= 16
+
+
+def load_daily_summary_state(base_dir: Path) -> dict[str, Any]:
+    path = base_dir / "history" / "daily_summary_state.json"
+    if not path.exists():
+        return {"last_date_et": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"last_date_et": ""}
+
+
+def save_daily_summary_state(base_dir: Path, state: dict[str, Any]) -> None:
+    path = base_dir / "history" / "daily_summary_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def to_et_date_str(ts_utc: str) -> str:
+    try:
+        dt = datetime.strptime(ts_utc, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc).astimezone(US_MARKET_TZ)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
+    now_et = now_utc().astimezone(US_MARKET_TZ)
+    if not should_generate_daily_summary(now_et):
+        return
+    today_et = now_et.strftime("%Y-%m-%d")
+    state = load_daily_summary_state(base_dir)
+    if state.get("last_date_et") == today_et:
+        return
+
+    eq_path = base_dir / "history" / "equity_curve.csv"
+    trades_path = base_dir / "history" / "trades_log.csv"
+    post_path = base_dir / "history" / "post_analysis_history.jsonl"
+    if not eq_path.exists():
+        return
+
+    try:
+        eq = pd.read_csv(eq_path)
+    except Exception:
+        return
+    if eq.empty or "timestamp_utc" not in eq.columns:
+        return
+    eq["date_et"] = eq["timestamp_utc"].astype(str).map(to_et_date_str)
+    day_eq = eq[eq["date_et"] == today_et].copy()
+    if day_eq.empty:
+        return
+
+    start_equity = safe_float(day_eq.iloc[0].get("start_equity"), 0.0)
+    end_equity = safe_float(day_eq.iloc[-1].get("end_equity"), 0.0)
+    day_pnl = end_equity - start_equity
+    day_ret = (day_pnl / start_equity * 100) if start_equity > 0 else 0.0
+    max_open = int(pd.to_numeric(day_eq.get("open_positions", 0), errors="coerce").fillna(0).max())
+    runs_count = len(day_eq)
+
+    realized = 0.0
+    closes_count = 0
+    win_rate = None
+    if trades_path.exists():
+        try:
+            td = pd.read_csv(trades_path)
+            if not td.empty and "timestamp_utc" in td.columns:
+                td["date_et"] = td["timestamp_utc"].astype(str).map(to_et_date_str)
+                day_td = td[td["date_et"] == today_et].copy()
+                closes = day_td[day_td.get("event", "") == "CLOSE"] if "event" in day_td.columns else pd.DataFrame()
+                if not closes.empty:
+                    pnl_series = pd.to_numeric(closes.get("pnl", 0), errors="coerce").fillna(0)
+                    realized = float(pnl_series.sum())
+                    closes_count = len(closes)
+                    win_rate = float((pnl_series > 0).sum() / len(pnl_series))
+        except Exception:
+            pass
+
+    post_status_counts: dict[str, int] = {}
+    if post_path.exists():
+        try:
+            for line in post_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                ts = str(obj.get("timestamp_utc", ""))
+                if not ts:
+                    continue
+                try:
+                    dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(US_MARKET_TZ)
+                    if dt.strftime("%Y-%m-%d") != today_et:
+                        continue
+                except Exception:
+                    continue
+                s = str(obj.get("status", "unknown"))
+                post_status_counts[s] = post_status_counts.get(s, 0) + 1
+        except Exception:
+            pass
+
+    improvements: list[str] = []
+    if day_pnl < 0:
+        improvements.append("Reduce new position size or tighten entry thresholds on weak days.")
+    if win_rate is not None and win_rate < 0.5:
+        improvements.append("Increase selectivity: require higher total score before opening trades.")
+    if closes_count == 0:
+        improvements.append("Few/zero closed trades today; review hold-time and exit calibration.")
+    if not post_status_counts:
+        improvements.append("Post-analysis data is sparse; ensure runs occur during market hours.")
+    if not improvements:
+        improvements.append("Keep current risk controls; monitor drawdown and maintain stock-only discipline.")
+
+    lines = [
+        f"# Daily Strategy Summary ({today_et} ET)",
+        "",
+        "## Performance",
+        f"- Runs today: `{runs_count}`",
+        f"- Start equity: `${start_equity:,.2f}`",
+        f"- End equity: `${end_equity:,.2f}`",
+        f"- Daily P/L: `${day_pnl:,.2f}` ({day_ret:.2f}%)",
+        f"- Realized P/L: `${realized:,.2f}`",
+        f"- Max open positions: `{max_open}`",
+        "",
+        "## Recommendation Effectiveness",
+        f"- Closed trades today: `{closes_count}`",
+        f"- Win rate: `{(win_rate * 100):.2f}%`" if win_rate is not None else "- Win rate: `N/A`",
+        f"- Post-analysis statuses: `{post_status_counts}`",
+        "",
+        "## How Strategy Worked",
+        "- Strategy remained low-risk, stock-only with mid/large-cap bias.",
+        "- Entries/exits were managed via target/stop/max-hold policy.",
+        "",
+        "## Improvements",
+    ]
+    for idx, item in enumerate(improvements, start=1):
+        lines.append(f"{idx}. {item}")
+
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    (latest_dir / "daily_summary.md").write_text("\n".join(lines), encoding="utf-8")
+
+    hist_path = base_dir / "history" / f"daily_summary_{today_et.replace('-', '')}.md"
+    hist_path.write_text("\n".join(lines), encoding="utf-8")
+
+    state["last_date_et"] = today_et
+    state["last_generated_run_ts"] = run_ts
+    save_daily_summary_state(base_dir, state)
+
+
+def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positions: list[dict[str, Any]], enable_after_hours: bool) -> None:
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Portfolio Report",
+        "",
+        f"Timestamp (UTC): `{summary.get('timestamp_utc', '')}`",
+        f"Initial Capital: `${safe_float(summary.get('initial_capital')):,.2f}`",
+        f"Start Equity: `${safe_float(summary.get('start_equity')):,.2f}`",
+        f"End Equity: `${safe_float(summary.get('end_equity')):,.2f}`",
+        f"Run P/L: `${safe_float(summary.get('run_pnl')):,.2f}` ({safe_float(summary.get('run_return_pct')):.2f}%)",
+        f"Total Return: `{safe_float(summary.get('total_return_pct')):.2f}%`",
+        f"Cash: `${safe_float(summary.get('cash')):,.2f}`",
+        f"Open Positions: `{int(summary.get('open_positions', 0))}`",
+        f"New Events This Run: `{int(summary.get('new_events', 0))}`",
+        "",
+    ]
+
+    position_rows = []
+    for p in open_positions:
+        symbol = str(p.get("symbol", ""))
+        if not symbol:
+            continue
+        px = fetch_symbol_price(symbol, enable_after_hours)
+        if px <= 0:
+            px = safe_float(p.get("entry_underlying_price"), 0.0)
+        alloc = safe_float(p.get("capital_allocated"), 0.0)
+        value = mark_position_value(p, px)
+        pnl = value - alloc
+        ret_pct = (pnl / alloc * 100) if alloc > 0 else 0.0
+        position_rows.append(
+            {
+                "symbol": symbol,
+                "instrument": str(p.get("instrument", "")),
+                "direction": str(p.get("direction", "")),
+                "entry": safe_float(p.get("entry_underlying_price"), 0.0),
+                "last": px,
+                "allocated": alloc,
+                "value": value,
+                "pnl": pnl,
+                "ret_pct": ret_pct,
+                "target": safe_float(p.get("target_price"), 0.0),
+                "stop": safe_float(p.get("stop_price"), 0.0),
+                "hold_runs": int(p.get("hold_runs", 0)),
+            }
+        )
+
+    realized = 0.0
+    trades_path = base_dir / "history" / "trades_log.csv"
+    if trades_path.exists():
+        try:
+            tdf = pd.read_csv(trades_path)
+            if not tdf.empty and "event" in tdf.columns and "pnl" in tdf.columns:
+                closes = tdf[tdf["event"] == "CLOSE"]
+                realized = float(pd.to_numeric(closes["pnl"], errors="coerce").fillna(0).sum())
+        except Exception:
+            realized = 0.0
+
+    unrealized = sum(r["pnl"] for r in position_rows)
+    lines.extend(
+        [
+            "## P&L Breakdown",
+            f"- Realized P&L: `${realized:,.2f}`",
+            f"- Unrealized P&L: `${unrealized:,.2f}`",
+            "",
+        ]
+    )
+
+    if position_rows:
+        by_pnl_desc = sorted(position_rows, key=lambda x: x["pnl"], reverse=True)
+        winners = by_pnl_desc[:3]
+        losers = sorted(position_rows, key=lambda x: x["pnl"])[:3]
+
+        lines.extend(
+            [
+                "## Top Winners (Open)",
+                "| Symbol | Instr | Dir | P&L | Return % |",
+                "|---|---|---|---:|---:|",
+            ]
+        )
+        for r in winners:
+            lines.append(
+                f"| {r['symbol']} | {r['instrument']} | {r['direction']} | ${r['pnl']:.2f} | {r['ret_pct']:.2f}% |"
+            )
+
+        lines.extend(
+            [
+                "",
+                "## Top Losers (Open)",
+                "| Symbol | Instr | Dir | P&L | Return % |",
+                "|---|---|---|---:|---:|",
+            ]
+        )
+        for r in losers:
+            lines.append(
+                f"| {r['symbol']} | {r['instrument']} | {r['direction']} | ${r['pnl']:.2f} | {r['ret_pct']:.2f}% |"
+            )
+
+        lines.extend(
+            [
+                "",
+                "## Open Positions",
+                "| Symbol | Instr | Dir | Entry | Last | Allocated | Value | P&L | Target | Stop | Hold Runs |",
+                "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for r in sorted(position_rows, key=lambda x: x["symbol"]):
+            lines.append(
+                f"| {r['symbol']} | {r['instrument']} | {r['direction']} | {r['entry']:.2f} | {r['last']:.2f} | "
+                f"${r['allocated']:.2f} | ${r['value']:.2f} | ${r['pnl']:.2f} | {r['target']:.2f} | {r['stop']:.2f} | {r['hold_runs']} |"
+            )
+    else:
+        lines.extend(["## Open Positions", "No open positions.", ""])
+
+    (latest_dir / "portfolio_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def load_notification_state(base_dir: Path) -> dict[str, Any]:
+    path = base_dir / "notifications" / "state.json"
+    if not path.exists():
+        return {"last_alert_ts_utc": "", "last_alert_hash": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"last_alert_ts_utc": "", "last_alert_hash": ""}
+
+
+def save_notification_state(base_dir: Path, state: dict[str, Any]) -> None:
+    path = base_dir / "notifications" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def should_alert(now_ts: datetime, state: dict[str, Any], cooldown_minutes: int, message_hash: str) -> bool:
+    if message_hash and message_hash == str(state.get("last_alert_hash", "")):
+        return False
+    last_ts = str(state.get("last_alert_ts_utc", ""))
+    if not last_ts:
+        return True
+    try:
+        dt = datetime.strptime(last_ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    age_min = (now_ts - dt).total_seconds() / 60
+    return age_min >= max(1, cooldown_minutes)
+
+
+def send_telegram_message(message: str, chat_id: str) -> tuple[bool, str]:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = (chat_id or os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if not (bot_token and chat):
+        return False, "missing_telegram_env"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        r = requests.post(
+            url,
+            data={
+                "chat_id": chat,
+                "text": message,
+                "disable_web_page_preview": "true",
+            },
+            timeout=20,
+        )
+        if 200 <= r.status_code < 300:
+            return True, "sent"
+        return False, f"telegram_http_{r.status_code}"
+    except Exception as exc:
+        return False, f"telegram_error:{exc}"
+
+
+def process_notifications(base_dir: Path, ts: str, top10: pd.DataFrame, market_ctx: dict[str, Any]) -> dict[str, Any]:
+    cfg = NOTIFICATIONS_CONFIG
+    out = {
+        "timestamp_utc": ts,
+        "enabled": bool(cfg.get("enabled", True)),
+        "channel": str(cfg.get("channel", "telegram")),
+        "telegram_enabled": bool(cfg.get("telegram_enabled", True)),
+        "sent": False,
+        "reason": "",
+        "telegram_chat_id": str(cfg.get("telegram_chat_id", "")),
+        "items": [],
+    }
+    if not out["enabled"]:
+        out["reason"] = "disabled"
+        return out
+    if top10.empty:
+        out["reason"] = "empty_top10"
+        return out
+
+    min_score = safe_float(cfg.get("good_trade_min_score"), 0.75)
+    min_rr = safe_float(cfg.get("good_trade_min_rr"), 1.5)
+    max_items = max(1, int(cfg.get("max_alert_items", 3)))
+    qualifying = []
+    for _, row in top10.iterrows():
+        score = safe_float(row.get("total_score"), 0.0)
+        rr = safe_float(row.get("risk_reward"), 0.0)
+        stock_action = str(row.get("action_stock", ""))
+        option_action = str(row.get("action_option", ""))
+        bullish = stock_action == "BUY_STOCK" and option_action in {"BUY_CALL", "NO_OPTION"} and score >= min_score and rr >= min_rr
+        bearish = stock_action == "SELL_SHORT" and option_action in {"BUY_PUT", "NO_OPTION"} and score <= -min_score and rr >= min_rr
+        if bullish or bearish:
+            qualifying.append(
+                {
+                    "symbol": str(row.get("symbol", "")),
+                    "score": round(score, 3),
+                    "stock_action": stock_action,
+                    "option_action": option_action,
+                    "entry": round(safe_float(row.get("entry_price"), 0.0), 2),
+                    "target": round(safe_float(row.get("target_price"), 0.0), 2),
+                    "stop": round(safe_float(row.get("stop_price"), 0.0), 2),
+                    "rr": round(rr, 2),
+                }
+            )
+    qualifying = qualifying[:max_items]
+    out["items"] = qualifying
+    if not qualifying:
+        out["reason"] = "no_very_good_trade"
+        return out
+
+    lines = [
+        f"ALERT {market_ctx.get('market_session','')} | Very good setups",
+    ]
+    for q in qualifying:
+        lines.append(
+            f"{q['symbol']} {q['stock_action']}/{q['option_action']} "
+            f"entry {q['entry']} target {q['target']} stop {q['stop']} rr {q['rr']} score {q['score']}"
+        )
+    body = " | ".join(lines)
+    msg_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    now_ts = now_utc()
+    state = load_notification_state(base_dir)
+    cooldown = int(cfg.get("cooldown_minutes", 60))
+    if not should_alert(now_ts, state, cooldown, msg_hash):
+        out["reason"] = "cooldown_or_duplicate"
+        return out
+
+    if out.get("channel") != "telegram":
+        out["reason"] = "unsupported_channel"
+        return out
+
+    if not out["telegram_enabled"]:
+        out["reason"] = "telegram_disabled"
+        return out
+
+    ok, reason = send_telegram_message(body, str(cfg.get("telegram_chat_id", "")))
+    out["sent"] = ok
+    out["reason"] = reason
+    if ok:
+        state["last_alert_ts_utc"] = now_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        state["last_alert_hash"] = msg_hash
+        save_notification_state(base_dir, state)
+
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    (latest_dir / "last_alert.txt").write_text(body, encoding="utf-8")
+    return out
+
+
+def build_new_position(row: dict[str, Any], equity: float, cash: float, run_count: int, instrument: str) -> dict[str, Any] | None:
+    symbol = str(row.get("symbol", ""))
+    if not symbol:
+        return None
+    action_stock = str(row.get("action_stock", ""))
+    action_option = str(row.get("action_option", ""))
+    if instrument == "STOCK":
+        if action_stock not in {"BUY_STOCK", "SELL_SHORT"}:
+            return None
+        direction = "LONG" if action_stock == "BUY_STOCK" else "SHORT"
+        leverage = 1.0
+        alloc_cap = equity * MAX_STOCK_ALLOC_PCT
+    else:
+        if action_option not in {"BUY_CALL", "BUY_PUT"}:
+            return None
+        direction = "LONG" if action_option == "BUY_CALL" else "SHORT"
+        leverage = 4.0
+        alloc_cap = equity * MAX_OPTION_ALLOC_PCT
+
+    entry = safe_float(row.get("entry_price"), 0.0)
+    stop = safe_float(row.get("stop_price"), 0.0)
+    target = safe_float(row.get("target_price"), 0.0)
+    if entry <= 0:
+        return None
+    stop_dist_ratio = abs(entry - stop) / entry if stop > 0 else 0.02
+    risk_budget = max(0.0, equity * RISK_PER_TRADE)
+    capital_by_risk = risk_budget / max(0.0001, stop_dist_ratio * leverage)
+    alloc = min(alloc_cap, capital_by_risk, max(0.0, cash))
+    if alloc < 100:
+        return None
+
+    return {
+        "id": f"{symbol}_{instrument}_{run_count}",
+        "symbol": symbol,
+        "instrument": instrument,
+        "direction": direction,
+        "leverage": leverage,
+        "capital_allocated": round(alloc, 4),
+        "entry_underlying_price": round(entry, 4),
+        "stop_price": round(stop, 4),
+        "target_price": round(target, 4),
+        "opened_run": run_count,
+        "hold_runs": 0,
+        "entry_score": safe_float(row.get("total_score"), 0.0),
+    }
+
+
+def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_after_hours: bool) -> dict[str, Any]:
+    state = load_portfolio_state(base_dir)
+    base_capital = safe_float(state.get("initial_capital"), INITIAL_CAPITAL)
+    start_equity = safe_float(state.get("equity"), base_capital)
+    cash = safe_float(state.get("cash"), base_capital)
+    run_count = int(state.get("run_count", 0)) + 1
+    open_positions: list[dict[str, Any]] = list(state.get("open_positions", []))
+
+    events: list[dict[str, Any]] = []
+    still_open: list[dict[str, Any]] = []
+    open_value = 0.0
+
+    for pos in open_positions:
+        symbol = str(pos.get("symbol", ""))
+        current_price = fetch_symbol_price(symbol, enable_after_hours)
+        if current_price <= 0:
+            pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
+            still_open.append(pos)
+            continue
+
+        value = mark_position_value(pos, current_price)
+        pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
+        close_now, reason = should_close_position(pos, current_price)
+        if close_now:
+            cash += value
+            pnl = value - safe_float(pos.get("capital_allocated"), 0.0)
+            events.append(
+                {
+                    "timestamp_utc": run_ts,
+                    "event": "CLOSE",
+                    "symbol": symbol,
+                    "instrument": pos.get("instrument"),
+                    "direction": pos.get("direction"),
+                    "entry_price": pos.get("entry_underlying_price"),
+                    "exit_price": round(current_price, 4),
+                    "capital_allocated": pos.get("capital_allocated"),
+                    "value": round(value, 4),
+                    "pnl": round(pnl, 4),
+                    "reason": reason,
+                    "hold_runs": pos.get("hold_runs"),
+                }
+            )
+            state["closed_positions_count"] = int(state.get("closed_positions_count", 0)) + 1
+        else:
+            open_value += value
+            still_open.append(pos)
+
+    open_positions = still_open
+    equity = cash + open_value
+    current_exposure_cap = equity * MAX_PORTFOLIO_EXPOSURE_PCT
+
+    candidate_rows = top10.to_dict(orient="records")
+    used_symbols = {str(p.get("symbol")) for p in open_positions}
+    # Prefer stock trades for low-risk profile, then small options sleeve.
+    for instrument in ("STOCK", "OPTION"):
+        for row in candidate_rows:
+            if len(open_positions) >= MAX_OPEN_POSITIONS:
+                break
+            symbol = str(row.get("symbol", ""))
+            if not symbol or symbol in used_symbols:
+                continue
+            open_value = sum(
+                mark_position_value(p, fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours) or safe_float(p.get("entry_underlying_price"), 0.0))
+                for p in open_positions
+            )
+            if open_value >= current_exposure_cap:
+                break
+            pos = build_new_position(row, equity, cash, run_count, instrument)
+            if pos is None:
+                continue
+            alloc = safe_float(pos.get("capital_allocated"), 0.0)
+            if open_value + alloc > current_exposure_cap:
+                continue
+            cash -= alloc
+            open_positions.append(pos)
+            used_symbols.add(symbol)
+            events.append(
+                {
+                    "timestamp_utc": run_ts,
+                    "event": "OPEN",
+                    "symbol": symbol,
+                    "instrument": pos.get("instrument"),
+                    "direction": pos.get("direction"),
+                    "entry_price": pos.get("entry_underlying_price"),
+                    "exit_price": "",
+                    "capital_allocated": pos.get("capital_allocated"),
+                    "value": pos.get("capital_allocated"),
+                    "pnl": 0.0,
+                    "reason": "signal_open",
+                    "hold_runs": 0,
+                }
+            )
+
+    # Re-mark open positions for ending equity.
+    end_open_value = 0.0
+    for p in open_positions:
+        px = fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
+        if px <= 0:
+            px = safe_float(p.get("entry_underlying_price"), 0.0)
+        end_open_value += mark_position_value(p, px)
+    end_equity = cash + end_open_value
+
+    run_pnl = end_equity - start_equity
+    run_return = (run_pnl / start_equity) if start_equity > 0 else 0.0
+    total_return = (end_equity / base_capital - 1.0) if base_capital > 0 else 0.0
+
+    state["cash"] = round(cash, 4)
+    state["equity"] = round(end_equity, 4)
+    state["run_count"] = run_count
+    state["open_positions"] = open_positions
+    state["last_updated_utc"] = run_ts
+    save_portfolio_state(base_dir, state)
+
+    append_trade_events(base_dir, events)
+    append_equity_curve(
+        base_dir,
+        {
+            "timestamp_utc": run_ts,
+            "run_count": run_count,
+            "start_equity": round(start_equity, 4),
+            "end_equity": round(end_equity, 4),
+            "run_pnl": round(run_pnl, 4),
+            "run_return_pct": round(run_return * 100, 4),
+            "total_return_pct": round(total_return * 100, 4),
+            "cash": round(cash, 4),
+            "open_positions": len(open_positions),
+            "closed_positions_count": int(state.get("closed_positions_count", 0)),
+        },
+    )
+
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "timestamp_utc": run_ts,
+        "initial_capital": base_capital,
+        "real_trading_capital": REAL_TRADING_CAPITAL,
+        "start_equity": round(start_equity, 4),
+        "end_equity": round(end_equity, 4),
+        "run_pnl": round(run_pnl, 4),
+        "run_return_pct": round(run_return * 100, 4),
+        "total_return_pct": round(total_return * 100, 4),
+        "cash": round(cash, 4),
+        "open_positions": len(open_positions),
+        "new_events": len(events),
+        "risk_profile": "LOW_RISK_HIGH_LEVEL",
+        "risk_limits": {
+            "risk_per_trade_pct": RISK_PER_TRADE * 100,
+            "max_stock_alloc_pct": MAX_STOCK_ALLOC_PCT * 100,
+            "max_option_alloc_pct": MAX_OPTION_ALLOC_PCT * 100,
+            "max_portfolio_exposure_pct": MAX_PORTFOLIO_EXPOSURE_PCT * 100,
+            "max_open_positions": MAX_OPEN_POSITIONS,
+        },
+    }
+    (latest_dir / "portfolio_status.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    write_portfolio_report(base_dir, summary, open_positions, enable_after_hours)
+    return summary
+
+
+def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]) -> Path:
+    dirs = ensure_dirs(base_dir)
+    ts = now_utc().strftime("%Y%m%d_%H%M%S")
+    run_dir = dirs["runs"] / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "market_context.json").open("w", encoding="utf-8") as f:
+        json.dump(market_ctx, f, indent=2)
+
+    all_df = pd.DataFrame([asdict(r) for r in rows]).sort_values("total_score", ascending=False)
+    all_df = add_instruction_columns(all_df)
+    all_df.to_csv(run_dir / "candidates.csv", index=False)
+
+    top10 = all_df.head(10).copy()
+    alert_summary = process_notifications(base_dir, ts, top10, market_ctx)
+    (run_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
+    portfolio_summary = update_portfolio(
+        base_dir,
+        top10,
+        ts,
+        bool(market_ctx.get("enable_after_hours", False)),
+    )
+    (run_dir / "portfolio_summary.json").write_text(json.dumps(portfolio_summary, indent=2), encoding="utf-8")
+    sizing_equity = max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0))
+    top10 = add_sizing_columns(top10, sizing_equity)
+    top10 = add_instruction_columns(top10)
+    top10.to_csv(run_dir / "top10.csv", index=False)
+    budget_plan = build_budget_plan(
+        top10,
+        safe_float(portfolio_summary.get("start_equity"), sizing_equity),
+        safe_float(portfolio_summary.get("end_equity"), sizing_equity),
+        safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL),
+    )
+
+    md_lines = [
+        f"# Top 10 Picks ({ts} UTC)",
+        "",
+        f"Market regime: **{market_ctx.get('regime', 'unknown')}**",
+        f"Market session: **{market_ctx.get('market_session', 'unknown')}** "
+        f"(`open={market_ctx.get('market_open', False)}`; ET {market_ctx.get('market_time_et', '')})",
+        f"Price reference: `{market_ctx.get('price_reference_mode', '')}` "
+        f"(close date ET: {market_ctx.get('price_reference_close_date_et', '')})",
+        "",
+        "## Portfolio",
+        f"- Initial capital: `${portfolio_summary.get('initial_capital', 0):,.2f}`",
+        f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
+        f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
+        f"- End equity this run: `${portfolio_summary.get('end_equity', 0):,.2f}`",
+        f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
+        f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
+        f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
+        f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
+        "",
+        "## Simulation Budget",
+        f"- Initial baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
+        f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
+        f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
+        f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",
+        "",
+        "## Alerts",
+        f"- Channel: `{alert_summary.get('channel', '')}`",
+        f"- Notification sent: `{alert_summary.get('sent', False)}`",
+        f"- Alert reason: `{alert_summary.get('reason', '')}`",
+        f"- Alert candidates: `{len(alert_summary.get('items', []))}`",
+        "",
+        "| Rank | Symbol | Strategy | Price | Score | Stock Qty | Option Ctr | E Days | E Score | Stock Action | Option Action | Exec | Option Hint | Entry | Target | Stop | R:R | Why |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---:|---:|---:|---:|---|",
+    ]
+    for idx, row in top10.reset_index(drop=True).iterrows():
+        md_lines.append(
+            f"| {idx+1} | {row['symbol']} | {row.get('strategy_bucket','DAILY_TRADING')} | {row['price']:.2f} | {row['total_score']:.3f} | "
+            f"{int(safe_float(row.get('stock_qty'), 0))} | {int(safe_float(row.get('option_contracts'), 0))} | "
+            f"{int(safe_float(row.get('upcoming_earnings_days'), -1))} | {safe_float(row.get('earnings_event_score'), 0.0):.2f} | "
+            f"{row['action_stock']} | {row['action_option']} | {row['execution_timing']} | {row['option_symbol_hint']} | "
+            f"{row['entry_price']:.2f} | {row['target_price']:.2f} | {row['stop_price']:.2f} | {row['risk_reward']:.2f} | "
+            f"{row['brief_reason']} |"
+        )
+    md_lines.extend(
+        [
+            "",
+            "## Clear Action Plan",
+        ]
+    )
+    for idx, row in top10.reset_index(drop=True).iterrows():
+        md_lines.append(
+            f"{idx+1}. {row['symbol']} ({row['trade_type']}, {row.get('strategy_bucket','DAILY_TRADING')}) | {row['stock_instruction']} | {row['option_instruction']} | {row['brief_reason']}"
+        )
+    if budget_plan.get("rows"):
+        md_lines.extend(["", "## Budget By Pick"])
+        for idx, b in enumerate(budget_plan["rows"], start=1):
+            md_lines.append(
+                f"{idx}. {b['symbol']} | {b['action_stock']} | shares={b['stock_qty']} | contracts={b['option_contracts']} | budget=${b['budget_usd']:.2f}"
+            )
+    md_lines.extend(["", "## Daily Trading Section"])
+    daily_focus = top10[top10["strategy_bucket"] == "DAILY_TRADING"].head(10).reset_index(drop=True)
+    if daily_focus.empty:
+        md_lines.append("- No daily-trading focus names in current top picks.")
+    else:
+        for idx, row in daily_focus.iterrows():
+            md_lines.append(
+                f"{idx+1}. {row['symbol']} | {row['stock_instruction']} | score={safe_float(row.get('total_score'), 0.0):.2f}"
+            )
+    md_lines.extend(["", "## Earnings Swing Section"])
+    earnings_focus = (
+        top10[top10["strategy_bucket"] == "EARNINGS_SWING"]
+        .sort_values(["earnings_event_score", "total_score"], ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    if earnings_focus.empty:
+        md_lines.append("- No earnings-swing setups (2-30 day pre-earnings window) in current top picks.")
+    else:
+        for idx, row in earnings_focus.iterrows():
+            md_lines.append(
+                f"{idx+1}. {row['symbol']} | earnings in {int(safe_float(row.get('upcoming_earnings_days'), -1))}d | "
+                f"{row['stock_instruction']} | e_score={safe_float(row.get('earnings_event_score'), 0.0):.2f} | total={safe_float(row.get('total_score'), 0.0):.2f}"
+            )
+    (run_dir / "top10.md").write_text("\n".join(md_lines), encoding="utf-8")
+
+    append_history(dirs["history"] / "top10_history.csv", ts, top10)
+    now_local = datetime.now()
+    if now_local.minute == 0:
+        append_history(dirs["history"] / "top10_hourly.csv", ts, top10)
+    if now_local.hour == 16 and now_local.minute <= 10:
+        append_history(dirs["history"] / "top10_daily.csv", ts, top10)
+
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    all_df.to_csv(latest_dir / "candidates.csv", index=False)
+    top10.to_csv(latest_dir / "top10.csv", index=False)
+    (latest_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
+    (latest_dir / "top10.md").write_text("\n".join(md_lines), encoding="utf-8")
+
+    generate_daily_summary(base_dir, ts)
+    return run_dir
+
+
+def append_history(path: Path, timestamp: str, top10: pd.DataFrame) -> None:
+    rows = []
+    for rank, row in enumerate(top10.reset_index(drop=True).to_dict(orient="records"), start=1):
+        rows.append({"timestamp_utc": timestamp, "rank": rank, **row})
+
+    write_header = not path.exists()
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_market_closed_status(base_dir: Path, mkt: dict[str, Any]) -> None:
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp_utc": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "skipped_market_closed",
+        **mkt,
+    }
+    (latest_dir / "market_status.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def render_stock_instruction(row: pd.Series) -> str:
+    action = str(row.get("action_stock", "HOLD"))
+    qty = int(safe_float(row.get("stock_qty"), 0))
+    entry = safe_float(row.get("entry_price"), 0.0)
+    target = safe_float(row.get("target_price"), 0.0)
+    stop = safe_float(row.get("stop_price"), 0.0)
+    if action == "BUY_STOCK":
+        return f"BUY {qty} SHARES @ {entry:.2f}, SELL @ {target:.2f}, STOP @ {stop:.2f}"
+    if action == "SELL_SHORT":
+        return f"SHORT {qty} SHARES @ {entry:.2f}, COVER @ {target:.2f}, STOP @ {stop:.2f}"
+    return "HOLD STOCK (NO TRADE)"
+
+
+def render_option_instruction(row: pd.Series) -> str:
+    action = str(row.get("action_option", "NO_OPTION"))
+    contracts = int(safe_float(row.get("option_contracts"), 0))
+    hint = str(row.get("option_symbol_hint", "")).strip()
+    expiry = str(row.get("option_expiry", "")).strip()
+    strike = safe_float(row.get("option_strike"), 0.0)
+    if action == "BUY_CALL":
+        detail = hint if hint else f"CALL strike {strike:.2f} exp {expiry}"
+        return f"BUY {contracts} CALL CONTRACT(S): {detail}"
+    if action == "BUY_PUT":
+        detail = hint if hint else f"PUT strike {strike:.2f} exp {expiry}"
+        return f"BUY {contracts} PUT CONTRACT(S): {detail}"
+    return "NO OPTIONS TRADE"
+
+
+def estimate_position_sizes(row: pd.Series, equity: float) -> tuple[int, float, int, float]:
+    action_stock = str(row.get("action_stock", "HOLD"))
+    action_option = str(row.get("action_option", "NO_OPTION"))
+    entry = safe_float(row.get("entry_price"), 0.0)
+    stop = safe_float(row.get("stop_price"), 0.0)
+    if equity <= 0 or entry <= 0:
+        return 0, 0.0, 0, 0.0
+
+    risk_budget = max(0.0, equity * RISK_PER_TRADE)
+    stock_alloc_cap = max(0.0, equity * MAX_STOCK_ALLOC_PCT)
+    option_alloc_cap = max(0.0, equity * MAX_OPTION_ALLOC_PCT)
+
+    stock_qty = 0
+    stock_notional = 0.0
+    if action_stock in {"BUY_STOCK", "SELL_SHORT"}:
+        risk_per_share = max(abs(entry - stop), max(0.005 * entry, 0.01))
+        qty_by_risk = int(risk_budget // risk_per_share)
+        qty_by_alloc = int(stock_alloc_cap // entry)
+        stock_qty = max(0, min(qty_by_risk, qty_by_alloc))
+        stock_notional = round(stock_qty * entry, 2)
+
+    option_contracts = 0
+    option_notional = 0.0
+    if action_option in {"BUY_CALL", "BUY_PUT"}:
+        # Premium proxy for sizing when live option premium is unavailable.
+        premium_per_share = max(0.5, entry * 0.02)
+        premium_per_contract = premium_per_share * 100.0
+        contracts_by_alloc = int(option_alloc_cap // premium_per_contract)
+        contracts_by_risk = int(risk_budget // max(premium_per_contract * 0.6, 1.0))
+        option_contracts = max(0, min(contracts_by_alloc, contracts_by_risk))
+        option_notional = round(option_contracts * premium_per_contract, 2)
+
+    return stock_qty, stock_notional, option_contracts, option_notional
+
+
+def add_sizing_columns(df: pd.DataFrame, equity: float) -> pd.DataFrame:
+    out = df.copy()
+    sized = out.apply(lambda r: estimate_position_sizes(r, equity), axis=1)
+    out["stock_qty"] = sized.map(lambda x: x[0])
+    out["stock_notional_usd"] = sized.map(lambda x: x[1])
+    out["option_contracts"] = sized.map(lambda x: x[2])
+    out["option_premium_est_usd"] = sized.map(lambda x: x[3])
+    out["recommended_budget_usd"] = (
+        pd.to_numeric(out["stock_notional_usd"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(out["option_premium_est_usd"], errors="coerce").fillna(0.0)
+    ).round(2)
+    return out
+
+
+def build_budget_plan(
+    top10: pd.DataFrame, run_start_equity: float, current_equity: float, simulation_baseline: float
+) -> dict[str, Any]:
+    start_eq = max(0.0, safe_float(run_start_equity, INITIAL_CAPITAL))
+    eq = max(0.0, safe_float(current_equity, start_eq))
+    baseline = max(0.0, safe_float(simulation_baseline, INITIAL_CAPITAL))
+    budget_cap = eq * MAX_PORTFOLIO_EXPOSURE_PCT
+    if top10.empty:
+        return {
+            "initial_baseline": baseline,
+            "run_start_budget": start_eq,
+            "current_equity": eq,
+            "uncapped_recommended": 0.0,
+            "capped_recommended": 0.0,
+            "reserve_after_plan": eq,
+            "rows": [],
+        }
+    work = top10.copy()
+    work["recommended_budget_usd"] = pd.to_numeric(work.get("recommended_budget_usd", 0.0), errors="coerce").fillna(0.0)
+    actionable = work[work["recommended_budget_usd"] > 0].copy()
+    uncapped = float(actionable["recommended_budget_usd"].sum()) if not actionable.empty else 0.0
+    capped = min(uncapped, budget_cap)
+    reserve = max(0.0, eq - capped)
+    rows = []
+    if not actionable.empty:
+        for _, r in actionable.head(10).iterrows():
+            rows.append(
+                {
+                    "symbol": str(r.get("symbol", "")),
+                    "action_stock": str(r.get("action_stock", "")),
+                    "stock_qty": int(safe_float(r.get("stock_qty"), 0)),
+                    "option_contracts": int(safe_float(r.get("option_contracts"), 0)),
+                    "budget_usd": round(safe_float(r.get("recommended_budget_usd"), 0.0), 2),
+                }
+            )
+    return {
+        "initial_baseline": round(baseline, 2),
+        "run_start_budget": round(start_eq, 2),
+        "current_equity": round(eq, 2),
+        "uncapped_recommended": round(uncapped, 2),
+        "capped_recommended": round(capped, 2),
+        "reserve_after_plan": round(reserve, 2),
+        "rows": rows,
+    }
+
+
+def add_instruction_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["trade_type"] = out.apply(
+        lambda r: (
+            "STOCK_AND_OPTIONS"
+            if str(r.get("action_stock")) in {"BUY_STOCK", "SELL_SHORT"} and str(r.get("action_option")) in {"BUY_CALL", "BUY_PUT"}
+            else "STOCK_ONLY"
+            if str(r.get("action_stock")) in {"BUY_STOCK", "SELL_SHORT"}
+            else "OPTIONS_ONLY"
+            if str(r.get("action_option")) in {"BUY_CALL", "BUY_PUT"}
+            else "NO_TRADE"
+        ),
+        axis=1,
+    )
+    out["stock_instruction"] = out.apply(render_stock_instruction, axis=1)
+    out["option_instruction"] = out.apply(render_option_instruction, axis=1)
+    out["brief_reason"] = out.apply(render_brief_reason, axis=1)
+    out["strategy_bucket"] = out.apply(classify_strategy_bucket, axis=1)
+    return out
+
+
+def classify_strategy_bucket(row: pd.Series) -> str:
+    action = str(row.get("action_stock", "HOLD"))
+    days = int(safe_float(row.get("upcoming_earnings_days"), -1))
+    e_score = safe_float(row.get("earnings_event_score"), 0.0)
+    if action == "BUY_STOCK" and 2 <= days <= 30 and e_score >= 0.55:
+        return "EARNINGS_SWING"
+    return "DAILY_TRADING"
+
+
+def render_brief_reason(row: pd.Series) -> str:
+    fund = safe_float(row.get("fundamental_score"), 0.0)
+    tech = safe_float(row.get("technical_score"), 0.0)
+    news = safe_float(row.get("news_score"), 0.0)
+    total = safe_float(row.get("total_score"), 0.0)
+    stock_action = str(row.get("action_stock", "HOLD"))
+    regime = str(row.get("market_regime", ""))
+    mkt = safe_float(row.get("market_trend_score"), 0.0)
+    cat = safe_float(row.get("category_trend_score"), 0.0)
+    earn_days = int(safe_float(row.get("upcoming_earnings_days"), -1))
+    earn_score = safe_float(row.get("earnings_event_score"), 0.0)
+
+    parts = []
+    if tech >= 0.4:
+        parts.append("strong technical trend")
+    elif tech <= -0.4:
+        parts.append("weak technical trend")
+
+    if fund >= 0.2:
+        parts.append("solid fundamentals")
+    elif fund <= -0.2:
+        parts.append("weak fundamentals")
+
+    if news >= 0.08:
+        parts.append("positive news tone")
+    elif news <= -0.08:
+        parts.append("negative news tone")
+    if mkt >= 0.3:
+        parts.append("market trend supportive")
+    elif mkt <= -0.3:
+        parts.append("market trend weak")
+    if cat >= 0.3:
+        parts.append("category trend supportive")
+    elif cat <= -0.3:
+        parts.append("category trend weak")
+    if 2 <= earn_days <= 8 and earn_score >= 0.4:
+        parts.append(f"earnings catalyst in {earn_days}d")
+
+    if stock_action == "BUY_STOCK":
+        direction = "bullish setup"
+    elif stock_action == "SELL_SHORT":
+        direction = "bearish setup"
+    else:
+        direction = "mixed setup"
+
+    if not parts:
+        parts.append("balanced signals")
+
+    return f"{direction}; {', '.join(parts)} (score {total:.2f}, regime {regime})"
+
+
+def run_once(base_dir: Path, universe_count: int, enable_after_hours: bool) -> Path:
+    params = load_model_params()
+    adaptation_summary = post_analyze_and_adapt(base_dir, params, enable_after_hours)
+    save_post_analysis(base_dir, adaptation_summary)
+    mkt = market_hours_context()
+    if str(mkt.get("market_session", "")) == "weekend":
+        symbols = STABLE_UNIVERSE[: max(10, universe_count)]
+    else:
+        symbols = fetch_top_gainers(universe_count)
+    regime, ctx = market_regime()
+    mkt_score = market_trend_score(regime, ctx)
+    category_ctx = build_category_context()
+    market_ctx = {
+        "regime": regime,
+        **ctx,
+        **mkt,
+        "universe_count": len(symbols),
+        "model_params_file": str(MODEL_STATE_PATH),
+        "enable_after_hours": bool(enable_after_hours),
+        "analysis_order": [
+            "fundamental",
+            "technical",
+            "news",
+            "market_trend",
+            "category_trend",
+        ],
+        "price_reference_mode": "last_regular_close" if not bool(mkt.get("market_open")) else "intraday_last_trade",
+        "price_reference_close_date_et": previous_trading_day_et(),
+        "weekend_reference": "previous_trading_day_close" if str(mkt.get("market_session", "")) == "weekend" else "",
+        "earnings_catalyst": {
+            "enabled": True,
+            "window_days": [2, 30],
+            "note": "buy bias before earnings when outlook and current price setup are supportive",
+        },
+        "market_trend_score": mkt_score,
+        "category_context": category_ctx,
+        "model_weights": params.get("weights", {}),
+        "threshold_adjustments": params.get("threshold_adjustments", {}),
+        "post_analysis": adaptation_summary,
+    }
+
+    rows: list[AnalysisRow] = []
+    analyzed_symbols: set[str] = set()
+    for sym in symbols:
+        analyzed_symbols.add(sym)
+        out = analyze_symbol(
+            sym,
+            regime,
+            params,
+            bool(mkt.get("market_open")),
+            enable_after_hours,
+            mkt_score,
+            category_ctx,
+        )
+        if out:
+            rows.append(out)
+
+    if len(rows) < 10:
+        for sym in STABLE_UNIVERSE:
+            if sym in analyzed_symbols:
+                continue
+            out = analyze_symbol(
+                sym,
+                regime,
+                params,
+                bool(mkt.get("market_open")),
+                enable_after_hours,
+                mkt_score,
+                category_ctx,
+            )
+            if out:
+                rows.append(out)
+            if len(rows) >= max(10, universe_count):
+                break
+
+    if not rows:
+        raise RuntimeError("No analyzable symbols were returned. Try again later.")
+
+    return save_run(base_dir, rows, market_ctx)
+
+
+def analyze_single_symbol(
+    symbol: str,
+    regime: str,
+    params: dict[str, Any],
+    market_open: bool,
+    enable_after_hours: bool,
+    mkt_score: float,
+    category_ctx: dict[str, float],
+) -> tuple[AnalysisRow | None, dict[str, Any]]:
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
+        if hist.empty:
+            return None, {"status": "no_history"}
+        price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
+        info = ticker.info or {}
+        news_items = ticker.news or []
+
+        gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
+        fund, fund_reason = fundamental_score(info)
+        tech, tech_reason = technical_score(hist)
+        news, news_reason = news_sentiment(symbol, news_items)
+        earnings_days = next_earnings_days(ticker, info)
+        outlook_score = earnings_outlook_score(info)
+        price_score = price_setup_score(hist, price)
+        earn_score = earnings_event_score(earnings_days, fund, tech, news, regime, outlook_score, price_score)
+        cat_score = category_trend_score(info, category_ctx)
+        base_total = compute_total_score(fund, tech, news, regime, params)
+        total = base_total + 0.12 * mkt_score + 0.08 * cat_score + 0.10 * earn_score
+        stock_action, option_action = decide_actions(regime, total, tech, params)
+
+        mcap = safe_float(info.get("marketCap"), 0.0)
+        beta = abs(safe_float(info.get("beta"), 1.0))
+        v20 = vol20(hist)
+        if TRADING_CONFIG.get("stock_only", True):
+            option_action = "NO_OPTION"
+        elif CONSERVATIVE_PROFILE and not conservative_option_allowed(total, stock_action, mcap, v20, beta, regime):
+            option_action = "NO_OPTION"
+        if gate_ok and stock_action == "HOLD" and regime != "bearish" and 2 <= earnings_days <= 30:
+            near_earnings_ok = earnings_days <= 10 and earn_score >= 0.55
+            far_earnings_ok = earnings_days > 10 and earn_score >= 0.72
+            if (near_earnings_ok or far_earnings_ok) and outlook_score >= 0.45 and price_score >= 0.45:
+                stock_action = "BUY_STOCK"
+                option_action = "NO_OPTION"
+        if not gate_ok:
+            stock_action = "HOLD"
+            option_action = "NO_OPTION"
+
+        entry_price, target_price, stop_price, rr = trade_levels(hist, price, stock_action)
+        option_symbol, option_expiry, option_strike = pick_option_candidate(ticker, option_action, price)
+        execution_timing = "NOW" if market_open else "NEXT_MARKET_OPEN"
+        reason = " | ".join(
+            [
+                gate_reason,
+                fund_reason,
+                tech_reason,
+                news_reason,
+                f"earnings_days={earnings_days}, earnings_event_score={earn_score:.2f}, earnings_outlook_score={outlook_score:.2f}, price_setup_score={price_score:.2f}",
+            ]
+        )
+        if not gate_ok:
+            reason = f"{reason} | conservative_filter=reject"
+
+        row = AnalysisRow(
+            symbol=symbol,
+            price=round(price, 4),
+            market_regime=regime,
+            fundamental_score=round(fund, 4),
+            technical_score=round(tech, 4),
+            news_score=round(news, 4),
+            upcoming_earnings_days=earnings_days,
+            earnings_event_score=round(earn_score, 4),
+            market_trend_score=round(mkt_score, 4),
+            category_trend_score=round(cat_score, 4),
+            total_score=round(total, 4),
+            action_stock=stock_action,
+            action_option=option_action,
+            execution_timing=execution_timing,
+            entry_price=entry_price,
+            target_price=target_price,
+            stop_price=stop_price,
+            risk_reward=rr,
+            option_symbol_hint=option_symbol,
+            option_expiry=option_expiry,
+            option_strike=round(option_strike, 4),
+            reason=reason,
+        )
+        status = "ok" if gate_ok else "filtered_by_conservative_gate"
+        return row, {"status": status}
+    except Exception as exc:
+        return None, {"status": "error", "error": str(exc)}
+
+
+def save_symbol_summary(
+    base_dir: Path,
+    symbol: str,
+    ts: str,
+    row: AnalysisRow | None,
+    market_ctx: dict[str, Any],
+    summary_meta: dict[str, Any],
+) -> Path:
+    dirs = ensure_dirs(base_dir)
+    run_dir = dirs["runs"] / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        f"# Symbol Summary: {symbol} ({ts} UTC)",
+        "",
+        f"Status: `{summary_meta.get('status', 'unknown')}`",
+        f"Market regime: **{market_ctx.get('regime', 'unknown')}**",
+        f"Market session: **{market_ctx.get('market_session', 'unknown')}** "
+        f"(`open={market_ctx.get('market_open', False)}`; ET {market_ctx.get('market_time_et', '')})",
+        "",
+        "Analysis order: `fundamental -> technical -> news -> market_trend -> category_trend`",
+        "",
+    ]
+
+    if row is not None:
+        df = add_instruction_columns(pd.DataFrame([asdict(row)]))
+        sim_state = load_portfolio_state(base_dir)
+        sim_equity = safe_float(sim_state.get("equity"), INITIAL_CAPITAL)
+        sim_baseline = safe_float(sim_state.get("initial_capital"), INITIAL_CAPITAL)
+        df = add_sizing_columns(df, max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0)))
+        df = add_instruction_columns(df)
+        single_budget = build_budget_plan(df, sim_equity, sim_equity, sim_baseline)
+        rec = df.iloc[0]
+        lines.extend(
+            [
+                "## Recommendation",
+                f"- Symbol: `{rec['symbol']}`",
+                f"- Trade type: `{rec['trade_type']}`",
+                f"- Strategy bucket: `{rec.get('strategy_bucket', 'DAILY_TRADING')}`",
+                f"- Stock action: `{rec['action_stock']}`",
+                f"- Option action: `{rec['action_option']}`",
+                f"- Stock quantity: `{int(safe_float(rec.get('stock_qty'), 0))}`",
+                f"- Option contracts: `{int(safe_float(rec.get('option_contracts'), 0))}`",
+                f"- Execution timing: `{rec['execution_timing']}`",
+                f"- Stock instruction: `{rec['stock_instruction']}`",
+                f"- Option instruction: `{rec['option_instruction']}`",
+                f"- Entry/Target/Stop: `{rec['entry_price']:.2f} / {rec['target_price']:.2f} / {rec['stop_price']:.2f}`",
+                f"- Risk/Reward: `{rec['risk_reward']:.2f}`",
+                "",
+                "## Simulation Budget",
+                f"- Initial baseline: `${single_budget.get('initial_baseline', 0):,.2f}`",
+                f"- Run start budget: `${single_budget.get('run_start_budget', 0):,.2f}`",
+                f"- Current equity: `${single_budget.get('current_equity', 0):,.2f}`",
+                f"- Real trading capital (fixed): `${REAL_TRADING_CAPITAL:,.2f}`",
+                f"- This pick budget: `${safe_float(rec.get('recommended_budget_usd'), 0.0):,.2f}`",
+                f"- Reserve after this pick (risk-capped): `${single_budget.get('reserve_after_plan', 0):,.2f}`",
+                "",
+                "## Scores",
+                f"- Fundamental: `{rec['fundamental_score']:.4f}`",
+                f"- Technical: `{rec['technical_score']:.4f}`",
+                f"- News: `{rec['news_score']:.4f}`",
+                f"- Upcoming earnings (days): `{int(safe_float(rec.get('upcoming_earnings_days'), -1))}`",
+                f"- Earnings event score: `{safe_float(rec.get('earnings_event_score'), 0.0):.4f}`",
+                f"- Market trend: `{rec['market_trend_score']:.4f}`",
+                f"- Category trend: `{rec['category_trend_score']:.4f}`",
+                f"- Total: `{rec['total_score']:.4f}`",
+                "",
+                "## Summary",
+                f"- {rec['brief_reason']}",
+                "",
+                "## Raw Reason",
+                f"- {rec['reason']}",
+            ]
+        )
+        rec_df = pd.DataFrame([rec.to_dict()])
+        rec_df.to_csv(run_dir / f"symbol_summary_{symbol}.csv", index=False)
+        rec_df.to_csv(latest_dir / f"symbol_summary_{symbol}.csv", index=False)
+        hist_path = dirs["history"] / f"symbol_summary_{symbol}_history.csv"
+        append_header = not hist_path.exists()
+        row_dict = {"timestamp_utc": ts, **rec.to_dict()}
+        with hist_path.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row_dict.keys()))
+            if append_header:
+                writer.writeheader()
+            writer.writerow(row_dict)
+    else:
+        lines.extend(
+            [
+                "## Recommendation",
+                "- No summary could be generated for this symbol in the current run.",
+                f"- Details: `{summary_meta}`",
+            ]
+        )
+
+    md = "\n".join(lines)
+    run_path = run_dir / f"symbol_summary_{symbol}.md"
+    latest_path = latest_dir / f"symbol_summary_{symbol}.md"
+    run_path.write_text(md, encoding="utf-8")
+    latest_path.write_text(md, encoding="utf-8")
+    return run_path
+
+
+def run_symbol_summary(base_dir: Path, symbol: str, enable_after_hours: bool) -> Path:
+    params = load_model_params()
+    regime, ctx = market_regime()
+    mkt_score = market_trend_score(regime, ctx)
+    category_ctx = build_category_context()
+    mkt = market_hours_context()
+    market_ctx = {
+        "regime": regime,
+        **ctx,
+        **mkt,
+        "enable_after_hours": bool(enable_after_hours),
+        "analysis_order": [
+            "fundamental",
+            "technical",
+            "news",
+            "market_trend",
+            "category_trend",
+        ],
+        "market_trend_score": mkt_score,
+        "category_context": category_ctx,
+        "model_weights": params.get("weights", {}),
+        "threshold_adjustments": params.get("threshold_adjustments", {}),
+    }
+    ts = now_utc().strftime("%Y%m%d_%H%M%S")
+    row, meta = analyze_single_symbol(
+        symbol=symbol,
+        regime=regime,
+        params=params,
+        market_open=bool(mkt.get("market_open")),
+        enable_after_hours=enable_after_hours,
+        mkt_score=mkt_score,
+        category_ctx=category_ctx,
+    )
+    return save_symbol_summary(base_dir, symbol, ts, row, market_ctx, meta)
+
+
+def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
+    dirs = ensure_dirs(base_dir)
+    ts = now_utc().strftime("%Y%m%d_%H%M%S")
+    run_dir = dirs["runs"] / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    mkt = market_hours_context()
+
+    latest_csv, latest_md = find_last_available_snapshot(base_dir)
+    if latest_csv and latest_csv.exists():
+        shutil.copy2(latest_csv, run_dir / "top10.csv")
+    else:
+        pd.DataFrame(
+            columns=[
+                "symbol",
+                "price",
+                "market_regime",
+                "fundamental_score",
+                "technical_score",
+                "news_score",
+                "upcoming_earnings_days",
+                "earnings_event_score",
+                "market_trend_score",
+                "category_trend_score",
+                "total_score",
+                "action_stock",
+                "action_option",
+                "execution_timing",
+                "entry_price",
+                "target_price",
+                "stop_price",
+                "risk_reward",
+                "option_symbol_hint",
+                "option_expiry",
+                "option_strike",
+                "reason",
+            ]
+        ).to_csv(run_dir / "top10.csv", index=False)
+
+    try:
+        stale_top10 = pd.read_csv(run_dir / "top10.csv")
+    except Exception:
+        stale_top10 = pd.DataFrame()
+    stale_changed = False
+    if not stale_top10.empty:
+        if "upcoming_earnings_days" not in stale_top10.columns:
+            stale_top10["upcoming_earnings_days"] = -1
+            stale_changed = True
+        if "earnings_event_score" not in stale_top10.columns:
+            stale_top10["earnings_event_score"] = 0.0
+            stale_changed = True
+        if "market_trend_score" not in stale_top10.columns:
+            stale_top10["market_trend_score"] = 0.0
+            stale_changed = True
+        if "category_trend_score" not in stale_top10.columns:
+            stale_top10["category_trend_score"] = 0.0
+            stale_changed = True
+    required_cols = {"trade_type", "stock_instruction", "option_instruction", "brief_reason", "strategy_bucket"}
+    if not stale_top10.empty and not required_cols.issubset(set(stale_top10.columns)):
+        stale_top10 = add_instruction_columns(stale_top10)
+        stale_changed = True
+    if not stale_top10.empty and stale_changed:
+        stale_top10.to_csv(run_dir / "top10.csv", index=False)
+        latest_dir = base_dir / "latest"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        stale_top10.to_csv(latest_dir / "top10.csv", index=False)
+    alert_summary = process_notifications(
+        base_dir,
+        ts,
+        stale_top10.head(10) if not stale_top10.empty else stale_top10,
+        {"market_session": mkt.get("market_session", "unknown")},
+    )
+    (run_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
+    portfolio_summary = update_portfolio(base_dir, stale_top10, ts, DEFAULT_ENABLE_AFTER_HOURS)
+    (run_dir / "portfolio_summary.json").write_text(json.dumps(portfolio_summary, indent=2), encoding="utf-8")
+    if not stale_top10.empty:
+        stale_top10 = add_sizing_columns(stale_top10, max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0)))
+        stale_top10 = add_instruction_columns(stale_top10)
+        stale_top10.to_csv(run_dir / "top10.csv", index=False)
+        latest_dir = base_dir / "latest"
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        stale_top10.to_csv(latest_dir / "top10.csv", index=False)
+    budget_plan = build_budget_plan(
+        stale_top10,
+        safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
+        safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL),
+        safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL),
+    )
+
+    latest_candidates = base_dir / "latest" / "candidates.csv"
+    if latest_candidates.exists():
+        shutil.copy2(latest_candidates, run_dir / "candidates.csv")
+    else:
+        pd.DataFrame().to_csv(run_dir / "candidates.csv", index=False)
+
+    note = [
+        f"# Top 10 Picks ({ts} UTC)",
+        "",
+        "Market regime: **stale_snapshot**",
+        f"Market session: **{mkt.get('market_session', 'unknown')}** "
+        f"(`open={mkt.get('market_open', False)}`; ET {mkt.get('market_time_et', '')})",
+        f"Price reference: `last_regular_close` (close date ET: {previous_trading_day_et()})",
+        "",
+        "## Portfolio",
+        f"- Initial capital: `${portfolio_summary.get('initial_capital', 0):,.2f}`",
+        f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
+        f"- End equity this run: `${portfolio_summary.get('end_equity', 0):,.2f}`",
+        f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
+        f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
+        f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
+        f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
+        "",
+        "## Simulation Budget",
+        f"- Initial baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
+        f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
+        f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
+        f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",
+        "",
+        "## Alerts",
+        f"- Channel: `{alert_summary.get('channel', '')}`",
+        f"- Notification sent: `{alert_summary.get('sent', False)}`",
+        f"- Alert reason: `{alert_summary.get('reason', '')}`",
+        f"- Alert candidates: `{len(alert_summary.get('items', []))}`",
+        "",
+        "Latest run used previous recommendations because live data fetch failed.",
+        "",
+        f"Error: `{error_message}`",
+    ]
+    if not stale_top10.empty:
+        note.extend(["", "## Clear Action Plan"])
+        for idx, row in stale_top10.head(10).reset_index(drop=True).iterrows():
+            trade_type = row.get("trade_type", "UNKNOWN")
+            strategy_bucket = row.get("strategy_bucket", "DAILY_TRADING")
+            stock_instruction = row.get("stock_instruction", "")
+            option_instruction = row.get("option_instruction", "")
+            brief_reason = row.get("brief_reason", "")
+            note.append(
+                f"{idx+1}. {row.get('symbol','')} ({trade_type}, {strategy_bucket}) | {stock_instruction} | {option_instruction} | {brief_reason}"
+            )
+        if budget_plan.get("rows"):
+            note.extend(["", "## Budget By Pick"])
+            for idx, b in enumerate(budget_plan["rows"], start=1):
+                note.append(
+                    f"{idx}. {b['symbol']} | {b['action_stock']} | shares={b['stock_qty']} | contracts={b['option_contracts']} | budget=${b['budget_usd']:.2f}"
+                )
+    (run_dir / "top10.md").write_text("\n".join(note), encoding="utf-8")
+    if latest_md and latest_md.exists():
+        shutil.copy2(latest_md, base_dir / "latest" / "top10_prev.md")
+    (base_dir / "latest" / "top10.md").write_text("\n".join(note), encoding="utf-8")
+    (base_dir / "latest" / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
+
+    status = {
+        "timestamp_utc": ts,
+        "status": "stale_snapshot",
+        "error": error_message,
+        "market_open": mkt.get("market_open"),
+        "market_session": mkt.get("market_session"),
+        "next_open_et": mkt.get("next_open_et"),
+        "next_close_et": mkt.get("next_close_et"),
+        "model_params_file": str(MODEL_STATE_PATH),
+        "model_meta": load_model_params().get("meta", {}),
+    }
+    market_context = {
+        "regime": "stale_snapshot",
+        "market_open": mkt.get("market_open"),
+        "market_session": mkt.get("market_session"),
+        "price_reference_mode": "last_regular_close",
+        "price_reference_close_date_et": previous_trading_day_et(),
+        "weekend_reference": "previous_trading_day_close" if str(mkt.get("market_session", "")) == "weekend" else "",
+        "next_open_et": mkt.get("next_open_et"),
+        "next_close_et": mkt.get("next_close_et"),
+        "error": error_message,
+        "post_analysis": json.loads((base_dir / "latest" / "post_analysis.json").read_text(encoding="utf-8"))
+        if (base_dir / "latest" / "post_analysis.json").exists()
+        else {},
+    }
+    with (run_dir / "market_context.json").open("w", encoding="utf-8") as f:
+        json.dump(market_context, f, indent=2)
+    with (run_dir / "status.json").open("w", encoding="utf-8") as f:
+        json.dump(status, f, indent=2)
+    generate_daily_summary(base_dir, ts)
+    return run_dir
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Automated Yahoo-based stock/options analysis")
+    parser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR), help="Output folder for run snapshots")
+    parser.add_argument("--universe-count", type=int, default=50, help="Number of top gainers to analyze")
+    parser.add_argument("--symbol", default="", help="Single stock symbol summary mode (e.g., AAPL).")
+    parser.add_argument(
+        "--config",
+        default=str(AGENT_CONFIG_PATH),
+        help="Unified JSON config path (news/notifications/trading).",
+    )
+    parser.add_argument(
+        "--enable-after-hours",
+        action="store_true",
+        default=DEFAULT_ENABLE_AFTER_HOURS,
+        help="Enable after-hours/extended-hours pricing for analysis and post-analysis learning.",
+    )
+    parser.add_argument(
+        "--set-real-balance",
+        type=float,
+        default=None,
+        help="Deprecated alias for --set-sim-budget.",
+    )
+    parser.add_argument(
+        "--set-sim-budget",
+        type=float,
+        default=None,
+        help="One-shot: reset persistent simulation budget state and exit.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    global NEWS_CONFIG, TRADING_CONFIG, INITIAL_CAPITAL, REAL_TRADING_CAPITAL
+    global NOTIFICATIONS_CONFIG
+    unified = load_agent_config(Path(args.config))
+    NEWS_CONFIG = dict(unified.get("news", DEFAULT_NEWS_CONFIG))
+    NOTIFICATIONS_CONFIG = dict(unified.get("notifications", DEFAULT_NOTIFICATIONS_CONFIG))
+    TRADING_CONFIG = dict(unified.get("trading", DEFAULT_TRADING_CONFIG))
+    # Backward compatibility for older config key "initial_capital".
+    sim_cap = safe_float(
+        TRADING_CONFIG.get("simulation_initial_capital", TRADING_CONFIG.get("initial_capital", 10000.0)),
+        10000.0,
+    )
+    real_cap = safe_float(TRADING_CONFIG.get("real_trading_capital", 10000.0), 10000.0)
+    if sim_cap > 0:
+        INITIAL_CAPITAL = sim_cap
+    if real_cap > 0:
+        REAL_TRADING_CAPITAL = real_cap
+    # Ensure adaptive model state exists on disk for traceability.
+    save_model_params(load_model_params())
+    base_dir = Path(args.base_dir)
+    sim_budget_override = args.set_sim_budget if args.set_sim_budget is not None else args.set_real_balance
+    if sim_budget_override is not None:
+        state = set_simulation_budget(base_dir, float(sim_budget_override))
+        print(
+            "Simulation budget updated. "
+            f"initial_capital={safe_float(state.get('initial_capital'), 0):.2f} "
+            f"cash={safe_float(state.get('cash'), 0):.2f} "
+            f"equity={safe_float(state.get('equity'), 0):.2f} "
+            f"real_trading_capital={REAL_TRADING_CAPITAL:.2f} "
+            f"state_file={PORTFOLIO_STATE_PATH}"
+        )
+        return 0
+    symbol = str(args.symbol or "").strip().upper()
+    try:
+        if symbol:
+            summary_path = run_symbol_summary(base_dir, symbol, bool(args.enable_after_hours))
+            print(f"Symbol summary completed. Result: {summary_path}")
+        else:
+            run_dir = run_once(base_dir, args.universe_count, bool(args.enable_after_hours))
+            print(f"Run completed. Results: {run_dir}")
+    except Exception as exc:
+        if symbol:
+            print(f"Symbol summary failed: {exc}")
+            return 1
+        run_dir = write_stale_snapshot(base_dir, str(exc))
+        print(f"Run completed with stale snapshot. Results: {run_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

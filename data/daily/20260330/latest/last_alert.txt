@@ -1,0 +1,1 @@
+ALERT regular | Very good setups | EQT BUY_STOCK/NO_OPTION entry 63.94 target 68.9 stop 60.96 rr 1.67 score 0.807 | XOM BUY_STOCK/NO_OPTION entry 171.63 target 180.27 stop 166.45 rr 1.67 score 0.79

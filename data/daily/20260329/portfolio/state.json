@@ -1,0 +1,66 @@
+{
+  "initial_capital": 10000.0,
+  "cash": 5355.5925,
+  "equity": 10312.9078,
+  "run_count": 8,
+  "open_positions": [
+    {
+      "id": "XOM_STOCK_8",
+      "symbol": "XOM",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1235.9059,
+      "entry_underlying_price": 170.477,
+      "stop_price": 165.5236,
+      "target_price": 178.7327,
+      "opened_run": 8,
+      "hold_runs": 0,
+      "entry_score": 0.7658
+    },
+    {
+      "id": "CVX_STOCK_8",
+      "symbol": "CVX",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1235.9059,
+      "entry_underlying_price": 210.5165,
+      "stop_price": 205.2083,
+      "target_price": 219.3637,
+      "opened_run": 8,
+      "hold_runs": 0,
+      "entry_score": 0.7183
+    },
+    {
+      "id": "MRK_STOCK_8",
+      "symbol": "MRK",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1235.9059,
+      "entry_underlying_price": 119.2711,
+      "stop_price": 116.4871,
+      "target_price": 123.9111,
+      "opened_run": 8,
+      "hold_runs": 0,
+      "entry_score": 0.5263
+    },
+    {
+      "id": "JNJ_STOCK_8",
+      "symbol": "JNJ",
+      "instrument": "STOCK",
+      "direction": "LONG",
+      "leverage": 1.0,
+      "capital_allocated": 1235.9059,
+      "entry_underlying_price": 239.7286,
+      "stop_price": 234.9381,
+      "target_price": 247.7129,
+      "opened_run": 8,
+      "hold_runs": 0,
+      "entry_score": 0.4736
+    }
+  ],
+  "closed_positions_count": 1,
+  "last_updated_utc": "20260329_201410"
+}

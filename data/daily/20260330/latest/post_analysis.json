@@ -1,0 +1,21 @@
+{
+  "timestamp_utc": "2026-03-30T20:00:08Z",
+  "status": "updated",
+  "evaluated_run_id": "20260330_193229",
+  "market_session": "after_hours",
+  "price_reference_mode": "market_close",
+  "evaluated": 2,
+  "correct": 1,
+  "accuracy": 0.5,
+  "buy_accuracy": 0.5,
+  "short_accuracy": null,
+  "weights": {
+    "fundamental": 0.3511,
+    "technical": 0.3301,
+    "news": 0.1351
+  },
+  "threshold_adjustments": {
+    "buy": 0.02,
+    "short": 0.0
+  }
+}

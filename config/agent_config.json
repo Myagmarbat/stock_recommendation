@@ -1,0 +1,41 @@
+{
+  "trading": {
+    "stock_only": true,
+    "real_trading_capital": 10000,
+    "simulation_initial_capital": 10000
+  },
+  "notifications": {
+    "enabled": true,
+    "channel": "telegram",
+    "telegram_enabled": true,
+    "telegram_chat_id": "",
+    "good_trade_min_score": 0.75,
+    "good_trade_min_rr": 1.5,
+    "cooldown_minutes": 60,
+    "max_alert_items": 3
+  },
+  "news": {
+    "half_life_hours": 24.0,
+    "unknown_source_weight": 1.0,
+    "missing_timestamp_weight": 0.5,
+    "min_recency_weight": 0.2,
+    "max_recency_weight": 1.5,
+    "normalization_divisor": 2.5,
+    "min_headline_count": 5,
+    "max_headlines_scored": 40,
+    "source_weights": {
+      "reuters": 1.35,
+      "bloomberg": 1.35,
+      "wall street journal": 1.3,
+      "wsj": 1.3,
+      "financial times": 1.3,
+      "cnbc": 1.2,
+      "marketwatch": 1.15,
+      "barron": 1.2,
+      "yahoo finance": 1.05,
+      "seeking alpha": 1.0,
+      "benzinga": 0.95,
+      "motley fool": 0.8
+    }
+  }
+}

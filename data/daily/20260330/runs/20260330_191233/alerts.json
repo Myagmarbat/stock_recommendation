@@ -1,0 +1,10 @@
+{
+  "timestamp_utc": "20260330_191233",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "no_very_good_trade",
+  "telegram_chat_id": "",
+  "items": []
+}

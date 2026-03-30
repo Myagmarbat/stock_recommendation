@@ -1,0 +1,24 @@
+{
+  "half_life_hours": 48.0,
+  "unknown_source_weight": 0.9,
+  "missing_timestamp_weight": 0.3,
+  "min_recency_weight": 0.25,
+  "max_recency_weight": 1.2,
+  "normalization_divisor": 3.5,
+  "min_headline_count": 8,
+  "max_headlines_scored": 30,
+  "source_weights": {
+    "reuters": 1.35,
+    "bloomberg": 1.35,
+    "wall street journal": 1.3,
+    "wsj": 1.3,
+    "financial times": 1.25,
+    "cnbc": 1.1,
+    "marketwatch": 1.05,
+    "barron": 1.1,
+    "yahoo finance": 1.0,
+    "seeking alpha": 0.95,
+    "benzinga": 0.85,
+    "motley fool": 0.6
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "regime": "stale_snapshot",
+  "market_open": true,
+  "market_session": "regular",
+  "price_reference_mode": "last_regular_close",
+  "price_reference_close_date_et": "2026-03-27",
+  "weekend_reference": "",
+  "next_open_et": "2026-03-31 09:30:00 EDT",
+  "next_close_et": "2026-03-30 16:00:00 EDT",
+  "error": "No analyzable symbols were returned. Try again later.",
+  "post_analysis": {
+    "timestamp_utc": "2026-03-30T13:55:43Z",
+    "status": "too_fresh",
+    "evaluated_run_id": "20260330_135128",
+    "age_minutes": 4
+  }
+}

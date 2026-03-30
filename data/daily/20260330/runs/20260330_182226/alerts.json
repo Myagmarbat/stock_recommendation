@@ -1,0 +1,21 @@
+{
+  "timestamp_utc": "20260330_182226",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "XOM",
+      "score": 0.793,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 172.38,
+      "target": 181.02,
+      "stop": 167.2,
+      "rr": 1.67
+    }
+  ]
+}

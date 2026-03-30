@@ -1,0 +1,64 @@
+{
+  "regime": "bullish",
+  "spy_20d_return": -0.0565488883805203,
+  "qqq_20d_return": -0.05481225635230025,
+  "regime_score": 0.8886388552671795,
+  "market_open": true,
+  "market_session": "regular",
+  "market_time_et": "2026-03-30 09:30:59 EDT",
+  "next_open_et": "2026-03-31 09:30:00 EDT",
+  "next_close_et": "2026-03-30 16:00:00 EDT",
+  "minutes_to_open": 1439,
+  "minutes_to_close": 389,
+  "holiday_calendar_applied": false,
+  "universe_count": 50,
+  "model_params_file": "data/model/model_params.json",
+  "enable_after_hours": false,
+  "analysis_order": [
+    "fundamental",
+    "technical",
+    "news",
+    "market_trend",
+    "category_trend"
+  ],
+  "price_reference_mode": "intraday_last_trade",
+  "price_reference_close_date_et": "2026-03-27",
+  "weekend_reference": "",
+  "earnings_catalyst": {
+    "enabled": true,
+    "window_days": [
+      2,
+      30
+    ],
+    "note": "buy bias before earnings when outlook and current price setup are supportive"
+  },
+  "market_trend_score": -0.0112,
+  "category_context": {
+    "Technology": -0.04332039631067075,
+    "Financial Services": -0.05158403416178858,
+    "Financial": -0.05158403416178858,
+    "Healthcare": -0.07658695581198072,
+    "Consumer Defensive": -0.06113421722337764,
+    "Consumer Cyclical": -0.06532619781497084,
+    "Industrials": -0.08241521744647973,
+    "Utilities": -0.013225419226864155,
+    "Real Estate": -0.06872516358562353,
+    "Energy": 0.12264486062384616,
+    "Basic Materials": -0.04151879284799742,
+    "Communication Services": -0.0809183918241747,
+    "world": -0.054400417937104484,
+    "oil": 0.4019956026942759
+  },
+  "model_weights": {
+    "fundamental": 0.4,
+    "technical": 0.45,
+    "news": 0.15
+  },
+  "threshold_adjustments": {
+    "buy": 0.0,
+    "short": 0.0
+  },
+  "post_analysis": {
+    "status": "no_runs"
+  }
+}

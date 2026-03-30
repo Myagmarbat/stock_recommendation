@@ -1,0 +1,81 @@
+{
+  "regime": "bullish",
+  "spy_20d_return": -0.07132457234142442,
+  "qqq_20d_return": -0.07366976927277114,
+  "regime_score": 0.8550056583858044,
+  "market_open": true,
+  "market_session": "regular",
+  "market_time_et": "2026-03-30 15:10:08 EDT",
+  "next_open_et": "2026-03-31 09:30:00 EDT",
+  "next_close_et": "2026-03-30 16:00:00 EDT",
+  "minutes_to_open": 1099,
+  "minutes_to_close": 49,
+  "holiday_calendar_applied": false,
+  "universe_count": 50,
+  "model_params_file": "data/model/model_params.json",
+  "enable_after_hours": false,
+  "analysis_order": [
+    "fundamental",
+    "technical",
+    "news",
+    "market_trend",
+    "category_trend"
+  ],
+  "price_reference_mode": "intraday_last_trade",
+  "price_reference_close_date_et": "2026-03-27",
+  "weekend_reference": "",
+  "earnings_catalyst": {
+    "enabled": true,
+    "window_days": [
+      2,
+      30
+    ],
+    "note": "buy bias before earnings when outlook and current price setup are supportive"
+  },
+  "market_trend_score": -0.04,
+  "category_context": {
+    "Technology": -0.0769454678622159,
+    "Financial Services": -0.05897286685715575,
+    "Financial": -0.05897286685715575,
+    "Healthcare": -0.08345030861712677,
+    "Consumer Defensive": -0.06792796021862813,
+    "Consumer Cyclical": -0.07896116414045828,
+    "Industrials": -0.10929664150091378,
+    "Utilities": -0.025812622911945526,
+    "Real Estate": -0.0818077963506878,
+    "Energy": 0.09465673090570914,
+    "Basic Materials": -0.05670385323359495,
+    "Communication Services": -0.08680907039034935,
+    "world": -0.06908353804570866,
+    "oil": 0.4366409212654916
+  },
+  "model_weights": {
+    "fundamental": 0.349915865235238,
+    "technical": 0.32739528247893623,
+    "news": 0.1319074515628401
+  },
+  "threshold_adjustments": {
+    "buy": 0.02,
+    "short": 0.0
+  },
+  "post_analysis": {
+    "status": "updated",
+    "evaluated_run_id": "20260330_185234",
+    "market_session": "regular",
+    "price_reference_mode": "regular_session_only",
+    "evaluated": 4,
+    "correct": 0,
+    "accuracy": 0.0,
+    "buy_accuracy": 0.0,
+    "short_accuracy": null,
+    "weights": {
+      "fundamental": 0.3499,
+      "technical": 0.3274,
+      "news": 0.1319
+    },
+    "threshold_adjustments": {
+      "buy": 0.02,
+      "short": 0.0
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "timestamp_utc": "20260330_150234",
+  "initial_capital": 10000.0,
+  "start_equity": 9996.0027,
+  "end_equity": 9999.2632,
+  "run_pnl": 3.2605,
+  "run_return_pct": 0.0326,
+  "total_return_pct": -0.0074,
+  "cash": 4000.0,
+  "open_positions": 5,
+  "new_events": 0,
+  "risk_profile": "LOW_RISK_HIGH_LEVEL",
+  "risk_limits": {
+    "risk_per_trade_pct": 0.75,
+    "max_stock_alloc_pct": 12.0,
+    "max_option_alloc_pct": 1.0,
+    "max_portfolio_exposure_pct": 60.0,
+    "max_open_positions": 8
+  }
+}

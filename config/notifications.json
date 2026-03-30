@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "telegram_chat_id": "",
+  "good_trade_min_score": 0.75,
+  "good_trade_min_rr": 1.5,
+  "cooldown_minutes": 60,
+  "max_alert_items": 3
+}
