@@ -234,6 +234,18 @@ FALLBACK_UNIVERSE = [
     "VZ",
     "MRNA",
     "BABA",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "XLK",
+    "XLF",
+    "XLE",
+    "XLI",
+    "XBI",
+    "SMH",
+    "TLT",
+    "GLD",
 ]
 
 STABLE_UNIVERSE = [
@@ -242,10 +254,12 @@ STABLE_UNIVERSE = [
     "MCD", "JNJ", "MRK", "ABBV", "TMO", "CRM", "ORCL", "ADBE", "AVGO", "QCOM",
     "TXN", "NKE", "DIS", "CAT", "GE", "HON", "AMGN", "PFE", "BAC", "GS",
     "MS", "SCHW", "SPGI", "BLK", "LOW", "NEE", "DUK", "SO", "VZ", "T",
+    "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLI", "XBI", "SMH", "TLT", "GLD",
 ]
 
 DEFAULT_TRADING_CONFIG = {
     "stock_only": True,
+    "allow_shorting": True,
     "real_trading_capital": 10000.0,
     "simulation_initial_capital": 10000.0,
     "include_downtrend_symbols": True,
@@ -991,7 +1005,15 @@ def category_trend_score(info: dict[str, Any], category_ctx: dict[str, float]) -
     return round(clamp(raw / 0.08, -1, 1), 4)
 
 
+def is_etf_like(info: dict[str, Any]) -> bool:
+    quote_type = str(info.get("quoteType", "")).strip().upper()
+    fund_family = str(info.get("fundFamily", "")).strip()
+    return quote_type == "ETF" or bool(fund_family)
+
+
 def fundamental_score(info: dict[str, Any]) -> tuple[float, str]:
+    if is_etf_like(info):
+        return 0.0, "ETF_fundamentals_n/a"
     pe = safe_float(info.get("trailingPE"), 40)
     margin = safe_float(info.get("profitMargins"))
     roe = safe_float(info.get("returnOnEquity"))
@@ -1056,6 +1078,8 @@ def conservative_gate(symbol: str, info: dict[str, Any], hist: pd.DataFrame, pri
     if not CONSERVATIVE_PROFILE:
         return True, "profile_off"
     market_cap = safe_float(info.get("marketCap"), 0.0)
+    if is_etf_like(info) and market_cap <= 0:
+        market_cap = safe_float(info.get("totalAssets"), 0.0)
     avg_vol = safe_float(info.get("averageVolume"), 0.0)
     beta = abs(safe_float(info.get("beta"), 1.0))
     v20 = vol20(hist)
@@ -1320,24 +1344,29 @@ def decide_actions(regime: str, total: float, technical: float, params: dict[str
     adj = params.get("threshold_adjustments", {})
     buy_adj = safe_float(adj.get("buy"), 0.0)
     short_adj = safe_float(adj.get("short"), 0.0)
+    allow_shorting = bool(TRADING_CONFIG.get("allow_shorting", True))
 
     if regime == "bullish":
         bullish_buy = safe_float(th.get("bullish_buy"), 0.25) + buy_adj
         bullish_short = safe_float(th.get("bullish_short"), -0.30) + short_adj
         if total >= bullish_buy:
             return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
-        if (not CONSERVATIVE_PROFILE) and total <= bullish_short:
-            return "SELL_SHORT", "BUY_PUT"
+        if allow_shorting:
+            if (not CONSERVATIVE_PROFILE) and total <= bullish_short:
+                return "SELL_SHORT", "BUY_PUT"
+            if CONSERVATIVE_PROFILE and total <= min(bullish_short, -0.55) and technical <= -0.35:
+                return "SELL_SHORT", "NO_OPTION" if TRADING_CONFIG.get("stock_only", True) else "BUY_PUT"
         return "HOLD", "NO_OPTION"
 
     if regime == "bearish":
         bearish_buy = safe_float(th.get("bearish_buy"), 0.45) + buy_adj
         bearish_short = safe_float(th.get("bearish_short"), -0.15) + short_adj
         bearish_tech_short = safe_float(th.get("bearish_technical_short"), -0.2)
-        if ((not CONSERVATIVE_PROFILE) and (total <= bearish_short or technical < bearish_tech_short)) or (
-            CONSERVATIVE_PROFILE and total <= -0.95 and technical < -0.8
-        ):
-            return "SELL_SHORT", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_PUT"
+        if allow_shorting:
+            if ((not CONSERVATIVE_PROFILE) and (total <= bearish_short or technical < bearish_tech_short)) or (
+                CONSERVATIVE_PROFILE and (total <= min(bearish_short, -0.25) or technical < min(bearish_tech_short, -0.35))
+            ):
+                return "SELL_SHORT", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_PUT"
         if total >= bearish_buy:
             return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
         return "HOLD", "NO_OPTION"
@@ -1346,8 +1375,11 @@ def decide_actions(regime: str, total: float, technical: float, params: dict[str
     neutral_short = safe_float(th.get("neutral_short"), -0.35) + short_adj
     if total >= neutral_buy:
         return "BUY_STOCK", "NO_OPTION" if (CONSERVATIVE_PROFILE or TRADING_CONFIG.get("stock_only", True)) else "BUY_CALL"
-    if (not CONSERVATIVE_PROFILE) and total <= neutral_short:
-        return "SELL_SHORT", "BUY_PUT"
+    if allow_shorting:
+        if (not CONSERVATIVE_PROFILE) and total <= neutral_short:
+            return "SELL_SHORT", "BUY_PUT"
+        if CONSERVATIVE_PROFILE and total <= min(neutral_short, -0.45) and technical <= -0.30:
+            return "SELL_SHORT", "NO_OPTION" if TRADING_CONFIG.get("stock_only", True) else "BUY_PUT"
     return "HOLD", "NO_OPTION"
 
 
@@ -1399,6 +1431,22 @@ def latest_trade_price(ticker: yf.Ticker, daily_hist: pd.DataFrame, enable_after
     return safe_float(daily_hist["Close"].iloc[-1], 0.0)
 
 
+def safe_ticker_info(ticker: yf.Ticker) -> dict[str, Any]:
+    try:
+        info = ticker.info or {}
+        return info if isinstance(info, dict) else {}
+    except Exception:
+        return {}
+
+
+def safe_ticker_news(ticker: yf.Ticker) -> list[dict[str, Any]]:
+    try:
+        news_items = ticker.news or []
+        return news_items if isinstance(news_items, list) else []
+    except Exception:
+        return []
+
+
 def analyze_symbol(
     symbol: str,
     regime: str,
@@ -1414,8 +1462,8 @@ def analyze_symbol(
         if hist.empty:
             return None
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
-        info = ticker.info or {}
-        news_items = ticker.news or []
+        info = safe_ticker_info(ticker)
+        news_items = safe_ticker_news(ticker)
         gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
         if not gate_ok:
             return None
@@ -1602,6 +1650,7 @@ def portfolio_default_state() -> dict[str, Any]:
         "capital_balance": INITIAL_CAPITAL,
         "cash": INITIAL_CAPITAL,
         "simulation_balance": INITIAL_CAPITAL,
+        "peak_simulation_balance": INITIAL_CAPITAL,
         "run_count": 0,
         "open_positions": [],
         "closed_positions_count": 0,
@@ -1624,6 +1673,11 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
                         out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
                     if "simulation_balance" not in data:
                         out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+                    if "peak_simulation_balance" not in data:
+                        out["peak_simulation_balance"] = max(
+                            safe_float(out.get("simulation_balance"), INITIAL_CAPITAL),
+                            safe_float(out.get("capital_balance"), INITIAL_CAPITAL),
+                        )
                     out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
                     out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
                     if not isinstance(out.get("open_positions"), list):
@@ -1645,6 +1699,11 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
         out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
     if "simulation_balance" not in data:
         out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+    if "peak_simulation_balance" not in data:
+        out["peak_simulation_balance"] = max(
+            safe_float(out.get("simulation_balance"), INITIAL_CAPITAL),
+            safe_float(out.get("capital_balance"), INITIAL_CAPITAL),
+        )
     # Keep aliases in memory for older call sites that may still read them.
     out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
     out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
@@ -1666,6 +1725,7 @@ def set_simulation_budget(base_dir: Path, balance: float) -> dict[str, Any]:
     state["capital_balance"] = INITIAL_CAPITAL
     state["cash"] = b
     state["simulation_balance"] = b
+    state["peak_simulation_balance"] = b
     # Backward-compatible aliases.
     state["initial_capital"] = state["capital_balance"]
     state["equity"] = state["simulation_balance"]
@@ -1725,6 +1785,73 @@ def should_close_position(position: dict[str, Any], current_price: float) -> tup
         if target > 0 and current_price <= target:
             return True, "target"
     return False, ""
+
+
+def build_budget_controls(
+    current_equity: float,
+    simulation_baseline: float,
+    peak_equity: float,
+    full_deploy: bool,
+    full_deploy_target_pct: float,
+) -> dict[str, float | int | str]:
+    eq = max(0.0, safe_float(current_equity, INITIAL_CAPITAL))
+    baseline = max(1.0, safe_float(simulation_baseline, INITIAL_CAPITAL))
+    peak = max(baseline, safe_float(peak_equity, baseline), eq)
+    drawdown_pct = max(0.0, (peak - eq) / peak * 100.0)
+    growth_vs_baseline_pct = ((eq / baseline) - 1.0) * 100.0 if baseline > 0 else 0.0
+    base_target_exposure = clamp(
+        safe_float(full_deploy_target_pct, 1.0) if full_deploy else MAX_PORTFOLIO_EXPOSURE_PCT,
+        MAX_PORTFOLIO_EXPOSURE_PCT if full_deploy else 0.25,
+        1.0 if full_deploy else MAX_PORTFOLIO_EXPOSURE_PCT,
+    )
+
+    regime = "normal"
+    risk_scale = 1.0
+    exposure_scale = 1.0
+    max_open_scale = 1.0
+    if drawdown_pct >= 20:
+        regime = "capital_preservation"
+        risk_scale = 0.45
+        exposure_scale = 0.50
+        max_open_scale = 0.50
+    elif drawdown_pct >= 15:
+        regime = "protective"
+        risk_scale = 0.60
+        exposure_scale = 0.65
+        max_open_scale = 0.65
+    elif drawdown_pct >= 10:
+        regime = "defensive"
+        risk_scale = 0.75
+        exposure_scale = 0.80
+        max_open_scale = 0.75
+    elif drawdown_pct >= 5:
+        regime = "cautious"
+        risk_scale = 0.90
+        exposure_scale = 0.90
+        max_open_scale = 0.90
+
+    effective_risk_per_trade_pct = RISK_PER_TRADE * risk_scale
+    effective_max_stock_alloc_pct = MAX_STOCK_ALLOC_PCT * exposure_scale
+    effective_max_option_alloc_pct = MAX_OPTION_ALLOC_PCT * risk_scale
+    min_target = 0.35 if full_deploy else 0.20
+    effective_target_exposure_pct = clamp(base_target_exposure * exposure_scale, min_target, base_target_exposure)
+    base_open_positions = 20 if full_deploy else MAX_OPEN_POSITIONS
+    effective_max_open_positions = max(3, int(round(base_open_positions * max_open_scale)))
+    reserve_cash_pct = max(0.0, 1.0 - effective_target_exposure_pct)
+
+    return {
+        "regime": regime,
+        "baseline_equity": round(baseline, 4),
+        "peak_equity": round(peak, 4),
+        "drawdown_pct": round(drawdown_pct, 4),
+        "growth_vs_baseline_pct": round(growth_vs_baseline_pct, 4),
+        "effective_risk_per_trade_pct": round(effective_risk_per_trade_pct * 100.0, 4),
+        "effective_max_stock_alloc_pct": round(effective_max_stock_alloc_pct * 100.0, 4),
+        "effective_max_option_alloc_pct": round(effective_max_option_alloc_pct * 100.0, 4),
+        "effective_target_exposure_pct": round(effective_target_exposure_pct * 100.0, 4),
+        "effective_max_open_positions": effective_max_open_positions,
+        "reserve_cash_pct": round(reserve_cash_pct * 100.0, 4),
+    }
 
 
 def append_equity_curve(base_dir: Path, row: dict[str, Any]) -> None:
@@ -1942,14 +2069,19 @@ def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positio
         "# Portfolio Report",
         "",
         f"Timestamp (UTC): `{summary.get('timestamp_utc', '')}`",
-        f"Capital Balance: `${safe_float(summary.get('capital_balance'), safe_float(summary.get('initial_capital'))):,.2f}`",
         f"Start Equity: `${safe_float(summary.get('start_equity')):,.2f}`",
         f"Simulation Balance: `${safe_float(summary.get('simulation_balance'), safe_float(summary.get('end_equity'))):,.2f}`",
+        f"Peak Equity: `${safe_float(summary.get('peak_equity')):,.2f}`",
+        f"Drawdown From Peak: `{safe_float(summary.get('drawdown_pct')):.2f}%`",
+        f"Benchmark Capital (fixed): `${safe_float(summary.get('capital_balance'), safe_float(summary.get('initial_capital'))):,.2f}`",
         f"Run P/L: `${safe_float(summary.get('run_pnl')):,.2f}` ({safe_float(summary.get('run_return_pct')):.2f}%)",
         f"Total Return: `{safe_float(summary.get('total_return_pct')):.2f}%`",
         f"Cash: `${safe_float(summary.get('cash')):,.2f}`",
         f"Open Positions: `{int(summary.get('open_positions', 0))}`",
         f"New Events This Run: `{int(summary.get('new_events', 0))}`",
+        f"Budget Regime: `{summary.get('budget_controls', {}).get('regime', 'normal')}`",
+        f"Target Exposure Cap: `{safe_float(summary.get('budget_controls', {}).get('effective_target_exposure_pct')):.2f}%`",
+        f"Risk Per Trade: `{safe_float(summary.get('budget_controls', {}).get('effective_risk_per_trade_pct')):.4f}%`",
         "",
     ]
 
@@ -2196,10 +2328,21 @@ def process_notifications(base_dir: Path, ts: str, top10: pd.DataFrame, market_c
     return out
 
 
-def build_new_position(row: dict[str, Any], equity: float, cash: float, run_count: int, instrument: str) -> dict[str, Any] | None:
+def build_new_position(
+    row: dict[str, Any],
+    equity: float,
+    cash: float,
+    run_count: int,
+    instrument: str,
+    budget_controls: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     symbol = str(row.get("symbol", ""))
     if not symbol:
         return None
+    controls = budget_controls or {}
+    stock_alloc_pct = safe_float(controls.get("effective_max_stock_alloc_pct"), MAX_STOCK_ALLOC_PCT * 100.0) / 100.0
+    option_alloc_pct = safe_float(controls.get("effective_max_option_alloc_pct"), MAX_OPTION_ALLOC_PCT * 100.0) / 100.0
+    risk_per_trade_pct = safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0) / 100.0
     action_stock = str(row.get("action_stock", ""))
     action_option = str(row.get("action_option", ""))
     if instrument == "STOCK":
@@ -2207,13 +2350,13 @@ def build_new_position(row: dict[str, Any], equity: float, cash: float, run_coun
             return None
         direction = "LONG" if action_stock == "BUY_STOCK" else "SHORT"
         leverage = 1.0
-        alloc_cap = equity * MAX_STOCK_ALLOC_PCT
+        alloc_cap = equity * stock_alloc_pct
     else:
         if action_option not in {"BUY_CALL", "BUY_PUT"}:
             return None
         direction = "LONG" if action_option == "BUY_CALL" else "SHORT"
         leverage = 4.0
-        alloc_cap = equity * MAX_OPTION_ALLOC_PCT
+        alloc_cap = equity * option_alloc_pct
 
     entry = safe_float(row.get("entry_price"), 0.0)
     stop = safe_float(row.get("stop_price"), 0.0)
@@ -2221,7 +2364,7 @@ def build_new_position(row: dict[str, Any], equity: float, cash: float, run_coun
     if entry <= 0:
         return None
     stop_dist_ratio = abs(entry - stop) / entry if stop > 0 else 0.02
-    risk_budget = max(0.0, equity * RISK_PER_TRADE)
+    risk_budget = max(0.0, equity * risk_per_trade_pct)
     capital_by_risk = risk_budget / max(0.0001, stop_dist_ratio * leverage)
     alloc = min(alloc_cap, capital_by_risk, max(0.0, cash))
     if alloc < 100:
@@ -2295,8 +2438,10 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     equity = cash + open_value
     full_deploy = bool(TRADING_CONFIG.get("full_budget_deploy", False))
     deploy_target_pct = clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0)
-    target_exposure_pct = deploy_target_pct if full_deploy else MAX_PORTFOLIO_EXPOSURE_PCT
-    max_open_positions = 20 if full_deploy else MAX_OPEN_POSITIONS
+    peak_equity = max(safe_float(state.get("peak_simulation_balance"), start_equity), start_equity, equity)
+    budget_controls = build_budget_controls(start_equity, base_capital, peak_equity, full_deploy, deploy_target_pct)
+    target_exposure_pct = safe_float(budget_controls.get("effective_target_exposure_pct"), MAX_PORTFOLIO_EXPOSURE_PCT * 100.0) / 100.0
+    max_open_positions = int(budget_controls.get("effective_max_open_positions", 20 if full_deploy else MAX_OPEN_POSITIONS))
     current_exposure_cap = equity * target_exposure_pct
 
     candidate_rows = top10.to_dict(orient="records")
@@ -2325,7 +2470,7 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
             )
             if open_value >= current_exposure_cap:
                 break
-            pos = build_new_position(row, equity, cash, run_count, "STOCK")
+            pos = build_new_position(row, equity, cash, run_count, "STOCK", budget_controls)
             remaining_slots = max(0, remaining_slots - 1)
             if pos is None:
                 continue
@@ -2431,7 +2576,7 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
                 )
                 if open_value >= current_exposure_cap:
                     break
-                pos = build_new_position(row, equity, cash, run_count, instrument)
+                pos = build_new_position(row, equity, cash, run_count, instrument, budget_controls)
                 if pos is None:
                     continue
                 alloc = safe_float(pos.get("capital_allocated"), 0.0)
@@ -2469,6 +2614,8 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     run_pnl = end_equity - start_equity
     run_return = (run_pnl / start_equity) if start_equity > 0 else 0.0
     total_return = (end_equity / base_capital - 1.0) if base_capital > 0 else 0.0
+    state["peak_simulation_balance"] = round(max(peak_equity, end_equity), 4)
+    budget_controls = build_budget_controls(end_equity, base_capital, state["peak_simulation_balance"], full_deploy, deploy_target_pct)
 
     state["capital_balance"] = base_capital
     state["cash"] = round(cash, 4)
@@ -2494,6 +2641,8 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
             "total_return_pct": round(total_return * 100, 4),
             "cash": round(cash, 4),
             "open_positions": len(open_positions),
+            "peak_equity": round(safe_float(state.get("peak_simulation_balance"), end_equity), 4),
+            "drawdown_pct": round(safe_float(budget_controls.get("drawdown_pct"), 0.0), 4),
             "closed_positions_count": int(state.get("closed_positions_count", 0)),
         },
     )
@@ -2510,17 +2659,20 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
         "run_return_pct": round(run_return * 100, 4),
         "total_return_pct": round(total_return * 100, 4),
         "cash": round(cash, 4),
+        "peak_equity": round(safe_float(state.get("peak_simulation_balance"), end_equity), 4),
+        "drawdown_pct": round(safe_float(budget_controls.get("drawdown_pct"), 0.0), 4),
         "open_positions": len(open_positions),
         "new_events": len(events),
         "risk_profile": "LOW_RISK_HIGH_LEVEL",
         "risk_limits": {
-            "risk_per_trade_pct": RISK_PER_TRADE * 100,
-            "max_stock_alloc_pct": MAX_STOCK_ALLOC_PCT * 100,
-            "max_option_alloc_pct": MAX_OPTION_ALLOC_PCT * 100,
-            "max_portfolio_exposure_pct": target_exposure_pct * 100,
-            "max_open_positions": max_open_positions,
+            "risk_per_trade_pct": safe_float(budget_controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100),
+            "max_stock_alloc_pct": safe_float(budget_controls.get("effective_max_stock_alloc_pct"), MAX_STOCK_ALLOC_PCT * 100),
+            "max_option_alloc_pct": safe_float(budget_controls.get("effective_max_option_alloc_pct"), MAX_OPTION_ALLOC_PCT * 100),
+            "max_portfolio_exposure_pct": safe_float(budget_controls.get("effective_target_exposure_pct"), target_exposure_pct * 100),
+            "max_open_positions": int(budget_controls.get("effective_max_open_positions", max_open_positions)),
             "full_budget_deploy": full_deploy,
         },
+        "budget_controls": budget_controls,
     }
     # Backward-compatible aliases for existing consumers.
     summary["initial_capital"] = summary["capital_balance"]
@@ -2528,6 +2680,16 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     (latest_dir / "portfolio_status.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     write_portfolio_report(base_dir, summary, open_positions, enable_after_hours)
     return summary
+
+
+def sizing_equity_from_summary(summary: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        safe_float(
+            summary.get("simulation_balance"),
+            safe_float(summary.get("end_equity"), safe_float(summary.get("start_equity"), INITIAL_CAPITAL)),
+        ),
+    )
 
 
 def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]) -> Path:
@@ -2566,15 +2728,17 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         bool(market_ctx.get("enable_after_hours", False)),
     )
     (run_dir / "portfolio_summary.json").write_text(json.dumps(portfolio_summary, indent=2), encoding="utf-8")
-    sizing_equity = max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0))
-    top10 = add_sizing_columns(top10, sizing_equity)
+    sizing_equity = sizing_equity_from_summary(portfolio_summary)
+    budget_controls = dict(portfolio_summary.get("budget_controls", {}))
+    top10 = add_sizing_columns(top10, sizing_equity, budget_controls)
     top10 = add_instruction_columns(top10)
     top10.to_csv(run_dir / "top10.csv", index=False)
     budget_plan = build_budget_plan(
         top10,
         safe_float(portfolio_summary.get("start_equity"), sizing_equity),
         safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), sizing_equity)),
-        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
+        safe_float(portfolio_summary.get("start_equity"), sizing_equity),
+        budget_controls,
     )
 
     md_lines = [
@@ -2587,9 +2751,9 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"(close date ET: {market_ctx.get('price_reference_close_date_et', '')})",
         "",
         "## Portfolio",
-        f"- Capital balance: `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
-        f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
+        f"- Benchmark capital (fixed): `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
+        f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
         f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
         f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
@@ -2597,9 +2761,14 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
         "## Simulation Budget",
-        f"- Initial baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Rolling baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Peak equity: `${budget_plan.get('peak_equity', 0):,.2f}`",
+        f"- Drawdown from peak: `{budget_plan.get('drawdown_pct', 0):.2f}%`",
+        f"- Budget regime: `{budget_plan.get('budget_regime', 'normal')}`",
+        f"- Target exposure cap: `{budget_plan.get('target_exposure_pct', 0):.2f}%`",
+        f"- Risk per trade: `{budget_plan.get('risk_per_trade_pct', 0):.4f}%`",
         f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
         f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
         f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",
@@ -2735,7 +2904,8 @@ def render_option_instruction(row: pd.Series) -> str:
     return "NO OPTIONS TRADE"
 
 
-def estimate_position_sizes(row: pd.Series, equity: float) -> tuple[int, float, int, float]:
+def estimate_position_sizes(row: pd.Series, equity: float, budget_controls: dict[str, Any] | None = None) -> tuple[int, float, int, float]:
+    controls = budget_controls or {}
     action_stock = str(row.get("action_stock", "HOLD"))
     action_option = str(row.get("action_option", "NO_OPTION"))
     entry = safe_float(row.get("entry_price"), 0.0)
@@ -2743,9 +2913,12 @@ def estimate_position_sizes(row: pd.Series, equity: float) -> tuple[int, float, 
     if equity <= 0 or entry <= 0:
         return 0, 0.0, 0, 0.0
 
-    risk_budget = max(0.0, equity * RISK_PER_TRADE)
-    stock_alloc_cap = max(0.0, equity * MAX_STOCK_ALLOC_PCT)
-    option_alloc_cap = max(0.0, equity * MAX_OPTION_ALLOC_PCT)
+    risk_per_trade_pct = safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0) / 100.0
+    stock_alloc_pct = safe_float(controls.get("effective_max_stock_alloc_pct"), MAX_STOCK_ALLOC_PCT * 100.0) / 100.0
+    option_alloc_pct = safe_float(controls.get("effective_max_option_alloc_pct"), MAX_OPTION_ALLOC_PCT * 100.0) / 100.0
+    risk_budget = max(0.0, equity * risk_per_trade_pct)
+    stock_alloc_cap = max(0.0, equity * stock_alloc_pct)
+    option_alloc_cap = max(0.0, equity * option_alloc_pct)
 
     stock_qty = 0
     stock_notional = 0.0
@@ -2770,9 +2943,9 @@ def estimate_position_sizes(row: pd.Series, equity: float) -> tuple[int, float, 
     return stock_qty, stock_notional, option_contracts, option_notional
 
 
-def add_sizing_columns(df: pd.DataFrame, equity: float) -> pd.DataFrame:
+def add_sizing_columns(df: pd.DataFrame, equity: float, budget_controls: dict[str, Any] | None = None) -> pd.DataFrame:
     out = df.copy()
-    sized = out.apply(lambda r: estimate_position_sizes(r, equity), axis=1)
+    sized = out.apply(lambda r: estimate_position_sizes(r, equity, budget_controls), axis=1)
     out["stock_qty"] = sized.map(lambda x: x[0])
     out["stock_notional_usd"] = sized.map(lambda x: x[1])
     out["option_contracts"] = sized.map(lambda x: x[2])
@@ -2785,17 +2958,28 @@ def add_sizing_columns(df: pd.DataFrame, equity: float) -> pd.DataFrame:
 
 
 def build_budget_plan(
-    top10: pd.DataFrame, run_start_equity: float, current_equity: float, simulation_baseline: float
+    top10: pd.DataFrame,
+    run_start_equity: float,
+    current_equity: float,
+    simulation_baseline: float,
+    budget_controls: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start_eq = max(0.0, safe_float(run_start_equity, INITIAL_CAPITAL))
     eq = max(0.0, safe_float(current_equity, start_eq))
     baseline = max(0.0, safe_float(simulation_baseline, INITIAL_CAPITAL))
-    budget_cap = eq * MAX_PORTFOLIO_EXPOSURE_PCT
+    controls = budget_controls or {}
+    target_exposure_pct = safe_float(controls.get("effective_target_exposure_pct"), MAX_PORTFOLIO_EXPOSURE_PCT * 100.0) / 100.0
+    budget_cap = eq * target_exposure_pct
     if top10.empty:
         return {
             "initial_baseline": baseline,
             "run_start_budget": start_eq,
             "current_equity": eq,
+            "budget_regime": str(controls.get("regime", "normal")),
+            "peak_equity": safe_float(controls.get("peak_equity"), eq),
+            "drawdown_pct": safe_float(controls.get("drawdown_pct"), 0.0),
+            "target_exposure_pct": round(target_exposure_pct * 100.0, 2),
+            "risk_per_trade_pct": safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0),
             "uncapped_recommended": 0.0,
             "capped_recommended": 0.0,
             "reserve_after_plan": eq,
@@ -2823,6 +3007,11 @@ def build_budget_plan(
         "initial_baseline": round(baseline, 2),
         "run_start_budget": round(start_eq, 2),
         "current_equity": round(eq, 2),
+        "budget_regime": str(controls.get("regime", "normal")),
+        "peak_equity": round(safe_float(controls.get("peak_equity"), eq), 2),
+        "drawdown_pct": round(safe_float(controls.get("drawdown_pct"), 0.0), 2),
+        "target_exposure_pct": round(target_exposure_pct * 100.0, 2),
+        "risk_per_trade_pct": round(safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0), 4),
         "uncapped_recommended": round(uncapped, 2),
         "capped_recommended": round(capped, 2),
         "reserve_after_plan": round(reserve, 2),
@@ -3011,8 +3200,8 @@ def analyze_single_symbol(
         if hist.empty:
             return None, {"status": "no_history"}
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
-        info = ticker.info or {}
-        news_items = ticker.news or []
+        info = safe_ticker_info(ticker)
+        news_items = safe_ticker_news(ticker)
 
         gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
         fund, fund_reason = fundamental_score(info)
@@ -3119,10 +3308,13 @@ def save_symbol_summary(
         df = add_instruction_columns(pd.DataFrame([asdict(row)]))
         sim_state = load_portfolio_state(base_dir)
         sim_equity = safe_float(sim_state.get("simulation_balance"), safe_float(sim_state.get("equity"), INITIAL_CAPITAL))
-        sim_baseline = safe_float(sim_state.get("capital_balance"), safe_float(sim_state.get("initial_capital"), INITIAL_CAPITAL))
-        df = add_sizing_columns(df, max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0)))
+        peak_equity = max(safe_float(sim_state.get("peak_simulation_balance"), sim_equity), sim_equity)
+        full_deploy = bool(TRADING_CONFIG.get("full_budget_deploy", False))
+        deploy_target_pct = clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0)
+        budget_controls = build_budget_controls(sim_equity, INITIAL_CAPITAL, peak_equity, full_deploy, deploy_target_pct)
+        df = add_sizing_columns(df, sim_equity, budget_controls)
         df = add_instruction_columns(df)
-        single_budget = build_budget_plan(df, sim_equity, sim_equity, sim_baseline)
+        single_budget = build_budget_plan(df, sim_equity, sim_equity, sim_equity, budget_controls)
         rec = df.iloc[0]
         lines.extend(
             [
@@ -3141,9 +3333,14 @@ def save_symbol_summary(
                 f"- Risk/Reward: `{rec['risk_reward']:.2f}`",
                 "",
                 "## Simulation Budget",
-                f"- Initial baseline: `${single_budget.get('initial_baseline', 0):,.2f}`",
+                f"- Rolling baseline: `${single_budget.get('initial_baseline', 0):,.2f}`",
                 f"- Run start budget: `${single_budget.get('run_start_budget', 0):,.2f}`",
                 f"- Current equity: `${single_budget.get('current_equity', 0):,.2f}`",
+                f"- Peak equity: `${single_budget.get('peak_equity', 0):,.2f}`",
+                f"- Drawdown from peak: `{single_budget.get('drawdown_pct', 0):.2f}%`",
+                f"- Budget regime: `{single_budget.get('budget_regime', 'normal')}`",
+                f"- Target exposure cap: `{single_budget.get('target_exposure_pct', 0):.2f}%`",
+                f"- Risk per trade: `{single_budget.get('risk_per_trade_pct', 0):.4f}%`",
                 f"- Real trading capital (fixed): `${REAL_TRADING_CAPITAL:,.2f}`",
                 f"- This pick budget: `${safe_float(rec.get('recommended_budget_usd'), 0.0):,.2f}`",
                 f"- Reserve after this pick (risk-capped): `${single_budget.get('reserve_after_plan', 0):,.2f}`",
@@ -3303,8 +3500,9 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
     (run_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
     portfolio_summary = update_portfolio(base_dir, stale_top10, ts, DEFAULT_ENABLE_AFTER_HOURS)
     (run_dir / "portfolio_summary.json").write_text(json.dumps(portfolio_summary, indent=2), encoding="utf-8")
+    budget_controls = dict(portfolio_summary.get("budget_controls", {}))
     if not stale_top10.empty:
-        stale_top10 = add_sizing_columns(stale_top10, max(0.0, safe_float(REAL_TRADING_CAPITAL, 10000.0)))
+        stale_top10 = add_sizing_columns(stale_top10, sizing_equity_from_summary(portfolio_summary), budget_controls)
         stale_top10 = add_instruction_columns(stale_top10)
         stale_top10.to_csv(run_dir / "top10.csv", index=False)
         latest_dir = base_dir / "latest"
@@ -3314,7 +3512,8 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         stale_top10,
         safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
         safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL)),
-        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
+        safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
+        budget_controls,
     )
 
     latest_candidates = base_dir / "latest" / "candidates.csv"
@@ -3332,7 +3531,8 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         f"Price reference: `last_regular_close` (close date ET: {previous_trading_day_et()})",
         "",
         "## Portfolio",
-        f"- Capital balance: `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
+        f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
+        f"- Benchmark capital (fixed): `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
         f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
         f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
@@ -3341,9 +3541,14 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
         "## Simulation Budget",
-        f"- Initial baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Rolling baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Peak equity: `${budget_plan.get('peak_equity', 0):,.2f}`",
+        f"- Drawdown from peak: `{budget_plan.get('drawdown_pct', 0):.2f}%`",
+        f"- Budget regime: `{budget_plan.get('budget_regime', 'normal')}`",
+        f"- Target exposure cap: `{budget_plan.get('target_exposure_pct', 0):.2f}%`",
+        f"- Risk per trade: `{budget_plan.get('risk_per_trade_pct', 0):.4f}%`",
         f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
         f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
         f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",

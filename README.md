@@ -2,44 +2,53 @@
 
 Automated scanner that:
 - Pulls top 50 symbols from Yahoo Finance market movers (default mix: 60% day gainers, 40% day losers).
-- Runs fundamental + technical + news sentiment analysis.
-- Adds quarterly earnings catalyst scoring (up to ~30 days pre-earnings) and checks if current price setup is favorable.
-- Detects broad market trend (bullish/bearish/neutral) and adapts recommendations.
+- Runs fundamental, technical, and news sentiment analysis.
+- Adds quarterly earnings catalyst scoring (up to about 30 days pre-earnings) and checks whether the current price setup is favorable.
+- Detects broad market trend (bullish, bearish, neutral) and adapts recommendations.
 - Produces top 10 picks every run.
 - Stores timestamped outputs for historical analysis.
-- Runs every 30 minutes in background via `launchd` during market hours only (weekdays).
-- Self-adjusts model weights/thresholds after each run based on prior pick correctness.
-- Applies run-to-run feedback learning: if last run calls were wrong, logic is updated for the next run.
-- Tracks US market session (pre-market / regular / after-hours / weekend) and next open/close times.
-- When market is closed, analysis uses regular close as the price reference.
-- Tracks virtual portfolio performance from fixed `capital_balance` `$10,000` and updates `simulation_balance` every run.
-- Generates one end-of-day strategy summary (weekdays, after 4:00 PM ET) with specific automated next-day improvement actions.
-- Uses conservative filtering by default (established mid-cap and large-cap companies, lower volatility/liquidity thresholds).
-- Conservative mode is stocks-first and defaults to `NO_OPTION` to lower risk.
+- Runs every 5 minutes in background via Windows Task Scheduler during market hours only on weekdays.
+- Self-adjusts model weights and thresholds after each run based on prior pick correctness.
+- Applies run-to-run feedback learning so the next run uses updated logic immediately.
+- Tracks US market session status and next open/close times.
+- Uses regular-session close pricing as the reference when the market is closed.
+- Tracks virtual portfolio performance from fixed `capital_balance` `$10,000` while updating `simulation_balance` every run.
+- Generates one end-of-day strategy summary per weekday after 4:00 PM ET with next-day improvement actions.
+- Uses conservative filtering by default and prefers stocks-first behavior with `NO_OPTION`.
 
 ## Setup
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
+## Quick Start
+
+1. Create and activate the virtual environment.
+2. Install dependencies.
+3. Run one manual scan to confirm the environment works.
+4. Install the Windows scheduled task.
+5. Start the scheduled task once if you want an immediate first run.
+
 ## Run once
 
-```bash
-python3 stock_option_agent/agent.py --base-dir data --universe-count 50
+```powershell
+python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json
 ```
 
 Daily partition example:
-```bash
-python3 stock_option_agent/agent.py --base-dir "data/daily/$(date +%Y%m%d)" --universe-count 50
+
+```powershell
+$dayKey = Get-Date -Format "yyyyMMdd"
+python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --universe-count 50 --config .\config\agent_config.json
 ```
 
 ## Run one symbol summary
 
-```bash
-python3 stock_option_agent/agent.py --base-dir data --symbol AAPL
+```powershell
+python .\stock_option_agent\agent.py --base-dir .\data --symbol AAPL --config .\config\agent_config.json
 ```
 
 Output files:
@@ -50,149 +59,239 @@ Output files:
 
 ## Set real balance (one-shot override)
 
-```bash
-source .venv/bin/activate
-python stock_option_agent/agent.py --base-dir "data/daily/$(date +%Y%m%d)" --set-sim-budget 10000
+```powershell
+.\.venv\Scripts\Activate.ps1
+$dayKey = Get-Date -Format "yyyyMMdd"
+python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --set-sim-budget 10000 --config .\config\agent_config.json
 ```
 
 Notes:
 - Updates persistent state file: `data/portfolio/state.json`
-- Resets open positions and run counters; keeps `capital_balance` fixed and resets `simulation_balance`
+- Resets open positions and run counters while keeping `capital_balance` fixed
 
 After-hours handling:
 - Default: disabled (regular session pricing only).
 - Enable explicitly:
-```bash
-python3 stock_option_agent/agent.py --base-dir data --universe-count 50 --enable-after-hours
+
+```powershell
+python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json --enable-after-hours
 ```
 
 ## News tuning
+
 - Unified config file: `config/agent_config.json`
 - Supports:
-  - `news`: source weights + recency + thresholds
-  - `notifications`: Telegram alerts + cooldown
+  - `news`: source weights, recency, thresholds
+  - `notifications`: Telegram alerts and cooldown
   - `trading`:
-    - `real_trading_capital` (fixed capital for quantity recommendations)
-    - `simulation_initial_capital` (first-run simulation baseline)
+    - `real_trading_capital`
+    - `simulation_initial_capital`
     - `stock_only`
-    - `include_downtrend_symbols` + `downtrend_symbol_ratio` (default `true` + `0.4`)
-    - `full_budget_deploy` + `full_deploy_target_pct` (deploy most/all simulation cash each run)
+    - `include_downtrend_symbols` and `downtrend_symbol_ratio`
+    - `full_budget_deploy` and `full_deploy_target_pct`
 - Legacy per-file configs are still supported but no longer required.
-- Enable after-hours in background explicitly:
-```bash
-ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
+- Enable after-hours in the Windows runner explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHours
 ```
 
 ## Trading mode
+
 - Config file: `config/agent_config.json` -> `trading.stock_only`
 - Current default: `stock_only = true` (options disabled)
 - Full deployment mode:
   - `trading.full_budget_deploy = true`
   - `trading.full_deploy_target_pct = 1.0`
-  - Uses up to ~100% of simulation balance (higher risk).
+  - Uses up to about 100% of simulation balance
 
 ## Output
-- Quickest view: `data/simple/` (curated, auto-refreshed each run)
-- `data/runs/<timestamp>/...` full snapshot per run
-- `data/latest/top10.csv` and `data/latest/top10.md` current recommendation
-- `data/latest/symbol_summary_<SYMBOL>.md` on-demand single-symbol summary
-- `top10.md` includes separate sections: `Daily Trading Section` and `Earnings Swing Section`
-- Includes trade levels per pick: `entry_price`, `target_price`, `stop_price`, `risk_reward`
-- Includes sizing per run: `stock_qty`, `stock_notional_usd`, `option_contracts`, `option_premium_est_usd`
-- Includes simulation budget plan from base `$10,000`: deploy amount, capped deploy, reserve cash, and per-pick budget
-- Portfolio/budget state is persistent across days in `data/portfolio/state.json` (not reset by daily folders)
-- Includes earnings catalyst fields: `upcoming_earnings_days`, `earnings_event_score`
-- Includes execution timing: `NOW` (market open) or `NEXT_MARKET_OPEN` (market closed)
-- `data/history/top10_history.csv` append-only run history
-- `data/history/top10_hourly.csv` hourly snapshots
-- `data/history/top10_daily.csv` daily snapshots
-- Adaptive model state: `data/model/model_params.json`
-- Post-analysis logs:
-  - `data/latest/post_analysis.json`
+
+- Quickest view: `data/simple/`
+- Full snapshot per run: `data/runs/<timestamp>/...`
+- Current recommendation: `data/latest/top10.csv` and `data/latest/top10.md`
+- On-demand single-symbol summary: `data/latest/symbol_summary_<SYMBOL>.md`
+- `top10.md` includes `Daily Trading Section` and `Earnings Swing Section`
+- Trade levels per pick: `entry_price`, `target_price`, `stop_price`, `risk_reward`
+- Sizing per run: `stock_qty`, `stock_notional_usd`, `option_contracts`, `option_premium_est_usd`
+- Persistent portfolio state across days: `data/portfolio/state.json`
+- Earnings catalyst fields: `upcoming_earnings_days`, `earnings_event_score`
+- Execution timing: `NOW` or `NEXT_MARKET_OPEN`
+- History outputs:
+  - `data/history/top10_history.csv`
+  - `data/history/top10_hourly.csv`
+  - `data/history/top10_daily.csv`
   - `data/history/post_analysis_history.jsonl`
-- Portfolio tracking:
+  - `data/history/equity_curve.csv`
+  - `data/history/trades_log.csv`
+- Portfolio outputs:
   - `data/latest/portfolio_status.json`
   - `data/latest/portfolio_report.md`
   - `data/latest/alerts.json`
   - `data/latest/last_alert.txt`
 - Runtime map:
-  - `data/today` -> symlink to current day partition
+  - `data/today` -> junction to the current day partition
   - `data/daily/YYYYMMDD/` -> primary partitioned storage
   - `data/model/` -> adaptive model parameters
-  - `data/portfolio/` -> persistent state (`capital_balance`, `simulation_balance`)
-  - `data/simple/` -> simplified outputs for daily usage
-- `data/history/equity_curve.csv`
-  - `data/history/trades_log.csv`
-  - `data/portfolio/state.json`
-  - Daily summary:
-    - `data/latest/daily_summary.md`
-    - `data/history/daily_summary_YYYYMMDD.md`
-    - `data/history/daily_summary_state.json` (one-summary-per-day guard)
+  - `data/portfolio/` -> persistent state
+  - `data/simple/` -> simplified outputs
+- Daily summary outputs:
+  - `data/latest/daily_summary.md`
+  - `data/history/daily_summary_YYYYMMDD.md`
+  - `data/history/daily_summary_state.json`
+
+## Where To Look After A Run
+
+- Current day outputs: `data\today\latest\`
+- Per-run snapshots: `data\today\runs\`
+- Current logs: `data\today\logs\`
+- Simplest summary view: `data\simple\top10.md`
+- Portfolio state: `data\portfolio\state.json`
+
+Most useful files after the scheduler runs:
+- `data\today\latest\top10.md`
+- `data\today\latest\portfolio_report.md`
+- `data\today\latest\daily_summary.md`
+- `data\today\logs\run_<timestamp>.log`
 
 ## Telegram Alerts (Very Good Setups)
+
 - Config: `config/agent_config.json` -> `notifications`
-- Trigger: high-confidence setups (score + risk/reward thresholds)
-- Anti-spam: cooldown + duplicate message suppression
-- Delivery backend: Telegram Bot API using env vars:
+- Trigger: high-confidence setups based on score and risk/reward thresholds
+- Anti-spam: cooldown and duplicate-message suppression
+- Delivery backend: Telegram Bot API using:
   - `TELEGRAM_BOT_TOKEN`
-  - `TELEGRAM_CHAT_ID` (or set `telegram_chat_id` in config)
+  - `TELEGRAM_CHAT_ID` or `telegram_chat_id` in config
 
 ## How Learning Works
+
 - Every run first evaluates the previous recommendations.
-- Correct vs wrong outcome is computed from latest available price.
+- Correct versus wrong outcome is computed from the latest available price.
 - Model weights and decision thresholds are updated automatically.
 - Updated parameters are saved and used immediately in the current run.
 
 ## Portfolio Strategy (Low Risk)
-- Capital balance: `$10,000` (fixed benchmark).
-- Simulation balance: updates every run from simulated trades.
-- Risk per trade: `0.75%` of equity.
-- Max stock allocation per position: `12%`.
-- Max options allocation per position: `1%`.
-- Max total exposure: `60%` of equity.
-- Positions can span multiple days:
-  - stock max hold: `5` trading days equivalent
-  - option max hold: `3` trading days equivalent
+
+- Capital balance: `$10,000` fixed benchmark
+- Simulation balance: updated every run from simulated trades
+- Risk per trade: `0.75%` of equity
+- Max stock allocation per position: `12%`
+- Max options allocation per position: `1%`
+- Max total exposure: `60%` of equity
+- Max holding period:
+  - stock: `5` trading days equivalent
+  - option: `3` trading days equivalent
 
 ## Portfolio Strategy (Full Budget Deploy)
+
 - Enable in `config/agent_config.json`:
   - `trading.full_budget_deploy = true`
   - `trading.full_deploy_target_pct = 1.0`
 - Behavior:
-  - Increases target exposure to configured deploy target (up to 100%).
-  - Distributes available cash across actionable picks each run.
-  - Keeps `capital_balance` fixed while `simulation_balance` reflects full deployment P/L.
+  - Increases target exposure up to the configured deploy percentage
+  - Distributes available cash across actionable picks each run
+  - Keeps `capital_balance` fixed while `simulation_balance` reflects full-deployment P/L
 
-## Run every 30 minutes in background (macOS)
+## Run every 5 minutes in background (Windows Task Scheduler)
 
-```bash
-bash scripts/install_launchd.sh
+Recommended operating flow:
+
+1. Install the scheduled task.
+2. Start it once manually if you want an immediate first run.
+3. Verify the task exists and is enabled.
+4. Check `data\today\logs\` and `data\today\latest\` after the first run.
+5. Disable or stop it when you need to pause background execution.
+
+Install the scheduled task from an elevated PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1
 ```
 
-Default schedule behavior:
-- Runs only on weekdays during regular US market hours (`06:30–13:00 PT` / `09:30–16:00 ET`).
-- Does not auto-run after-hours or weekends.
-- Each run day is isolated under `data/daily/YYYYMMDD/` with its own `runs/`, `latest/`, `history/`, and `logs/`.
-- Quick pointer to today's folder: `data/today` (symlink).
-- For off-hours analysis, run manually:
+Manual one-shot run through the Windows runner:
 
-```bash
-bash scripts/run_agent.sh
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1
+```
+
+Enable after-hours in the scheduled runner:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1 -EnableAfterHours
 ```
 
 Check status:
 
-```bash
-launchctl list | rg stock_option_agent
+```powershell
+Get-ScheduledTask -TaskName stock_option_agent
+```
+
+Check the most recent task result and runtime details:
+
+```powershell
+Get-ScheduledTaskInfo -TaskName stock_option_agent
+```
+
+Run immediately:
+
+```powershell
+Start-ScheduledTask -TaskName stock_option_agent
 ```
 
 Remove job:
 
-```bash
-bash scripts/uninstall_launchd.sh
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_task_scheduler.ps1
 ```
 
+Stop the currently running task instance:
+
+```powershell
+Stop-ScheduledTask -TaskName stock_option_agent
+```
+
+Disable the background scheduler without deleting it:
+
+```powershell
+Disable-ScheduledTask -TaskName stock_option_agent
+```
+
+Re-enable the background scheduler:
+
+```powershell
+Enable-ScheduledTask -TaskName stock_option_agent
+```
+
+Common scheduler actions:
+- Install or refresh the task definition:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1`
+- Run one cycle immediately:
+  - `Start-ScheduledTask -TaskName stock_option_agent`
+- Stop the current in-progress run:
+  - `Stop-ScheduledTask -TaskName stock_option_agent`
+- Pause future scheduled runs:
+  - `Disable-ScheduledTask -TaskName stock_option_agent`
+- Resume future scheduled runs:
+  - `Enable-ScheduledTask -TaskName stock_option_agent`
+- Remove the task completely:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_task_scheduler.ps1`
+
+Troubleshooting:
+- If the task exists but no fresh output appears, check `data\today\logs\` first.
+- If `Get-ScheduledTaskInfo` shows failures, run `powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1` manually to reproduce the issue in the foreground.
+- If Python or dependencies changed, reinstall the task after confirming `.venv` is valid.
+- If you want after-hours scheduling behavior, reinstall with `-EnableAfterHours`.
+
+Default schedule behavior:
+- Runs every 5 minutes from `6:30 AM` through `1:00 PM` local time
+- Uses weekdays only (`MON-FRI`)
+- Intended for a Windows machine set to Pacific Time to match `09:30-16:00 ET`
+- Uses `scripts/run_agent.ps1`
+- Writes logs under `data/daily/YYYYMMDD/logs/`
+- Refreshes `data/today` as a directory junction to the current `data/daily/YYYYMMDD/` partition
+- Does not auto-run after-hours or weekends unless installed with `-EnableAfterHours`
+
 ## Important
+
 - The engine ranks opportunities; it does not guarantee profitability.
 - Validate fills, bid/ask spread, and position sizing before trading live.
-# codex_sample

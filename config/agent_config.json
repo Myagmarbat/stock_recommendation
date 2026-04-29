@@ -1,6 +1,7 @@
 {
   "trading": {
     "stock_only": true,
+    "allow_shorting": true,
     "real_trading_capital": 10000,
     "simulation_initial_capital": 10000,
     "include_downtrend_symbols": true,

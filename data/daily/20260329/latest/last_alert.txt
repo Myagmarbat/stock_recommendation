@@ -1,1 +1,0 @@
-ALERT weekend | Very good setups | XOM BUY_STOCK/NO_OPTION entry 170.48 target 178.73 stop 165.52 rr 1.67 score 0.766
