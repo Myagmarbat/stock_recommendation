@@ -31,6 +31,7 @@ MODEL_STATE_PATH = Path("data/model/model_params.json")
 PORTFOLIO_STATE_PATH = Path("data/portfolio/state.json")
 AGENT_CONFIG_PATH = Path("config/agent_config.json")
 US_MARKET_TZ = ZoneInfo("America/New_York")
+PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 US_MARKET_OPEN = dt_time(9, 30)
 US_MARKET_CLOSE = dt_time(16, 0)
 MIN_LEARNING_AGE_MINUTES = 10
@@ -448,6 +449,7 @@ def compute_total_score(fund: float, tech: float, news: float, regime: str, para
 def market_hours_context(now_dt: datetime | None = None) -> dict[str, Any]:
     current_utc = now_dt or now_utc()
     now_et = current_utc.astimezone(US_MARKET_TZ)
+    now_pt = current_utc.astimezone(PACIFIC_TZ)
     weekday = now_et.weekday()  # Mon=0
     is_weekday = weekday < 5
     open_dt = now_et.replace(hour=US_MARKET_OPEN.hour, minute=US_MARKET_OPEN.minute, second=0, microsecond=0)
@@ -475,12 +477,17 @@ def market_hours_context(now_dt: datetime | None = None) -> dict[str, Any]:
 
     mins_to_open = int((next_open_et - now_et).total_seconds() // 60)
     mins_to_close = int((next_close_et - now_et).total_seconds() // 60)
+    next_open_pt = next_open_et.astimezone(PACIFIC_TZ)
+    next_close_pt = next_close_et.astimezone(PACIFIC_TZ)
     return {
         "market_open": market_open,
         "market_session": session,
         "market_time_et": now_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "market_time_pt": now_pt.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "next_open_et": next_open_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "next_close_et": next_close_et.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "next_open_pt": next_open_pt.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "next_close_pt": next_close_pt.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "minutes_to_open": max(mins_to_open, 0),
         "minutes_to_close": max(mins_to_close, 0),
         "holiday_calendar_applied": False,
@@ -498,6 +505,11 @@ def previous_trading_day_et(now_dt: datetime | None = None) -> str:
     while ref.weekday() >= 5:
         ref = ref - timedelta(days=1)
     return ref.strftime("%Y-%m-%d")
+
+
+def previous_trading_day_pt(now_dt: datetime | None = None) -> str:
+    now_pt = (now_dt or now_utc()).astimezone(PACIFIC_TZ)
+    return previous_trading_day_et(now_pt.astimezone(timezone.utc))
 
 
 def post_analyze_and_adapt(base_dir: Path, params: dict[str, Any], enable_after_hours: bool) -> dict[str, Any]:
@@ -1900,21 +1912,38 @@ def save_daily_summary_state(base_dir: Path, state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def to_et_date_str(ts_utc: str) -> str:
+def to_pt_date_str(ts_utc: str) -> str:
     try:
-        dt = datetime.strptime(ts_utc, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc).astimezone(US_MARKET_TZ)
+        dt = datetime.strptime(ts_utc, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc).astimezone(PACIFIC_TZ)
         return dt.strftime("%Y-%m-%d")
     except Exception:
         return ""
 
 
+def format_run_ts_pt(ts_utc: str) -> str:
+    try:
+        dt = datetime.strptime(ts_utc, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc).astimezone(PACIFIC_TZ)
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
+        return ts_utc
+
+
+def format_iso_utc_to_pt(ts_utc: str) -> str:
+    try:
+        dt = datetime.strptime(ts_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(PACIFIC_TZ)
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
+        return ts_utc
+
+
 def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
     now_et = now_utc().astimezone(US_MARKET_TZ)
+    now_pt = now_utc().astimezone(PACIFIC_TZ)
     if not should_generate_daily_summary(now_et):
         return
-    today_et = now_et.strftime("%Y-%m-%d")
+    today_pt = now_pt.strftime("%Y-%m-%d")
     state = load_daily_summary_state(base_dir)
-    if state.get("last_date_et") == today_et:
+    if state.get("last_date_pt") == today_pt or state.get("last_date_et") == today_pt:
         return
 
     eq_path = base_dir / "history" / "equity_curve.csv"
@@ -1929,8 +1958,8 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
         return
     if eq.empty or "timestamp_utc" not in eq.columns:
         return
-    eq["date_et"] = eq["timestamp_utc"].astype(str).map(to_et_date_str)
-    day_eq = eq[eq["date_et"] == today_et].copy()
+    eq["date_pt"] = eq["timestamp_utc"].astype(str).map(to_pt_date_str)
+    day_eq = eq[eq["date_pt"] == today_pt].copy()
     if day_eq.empty:
         return
 
@@ -1948,8 +1977,8 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
         try:
             td = pd.read_csv(trades_path)
             if not td.empty and "timestamp_utc" in td.columns:
-                td["date_et"] = td["timestamp_utc"].astype(str).map(to_et_date_str)
-                day_td = td[td["date_et"] == today_et].copy()
+                td["date_pt"] = td["timestamp_utc"].astype(str).map(to_pt_date_str)
+                day_td = td[td["date_pt"] == today_pt].copy()
                 closes = day_td[day_td.get("event", "") == "CLOSE"] if "event" in day_td.columns else pd.DataFrame()
                 if not closes.empty:
                     pnl_series = pd.to_numeric(closes.get("pnl", 0), errors="coerce").fillna(0)
@@ -1970,8 +1999,8 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
                 if not ts:
                     continue
                 try:
-                    dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(US_MARKET_TZ)
-                    if dt.strftime("%Y-%m-%d") != today_et:
+                    dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(PACIFIC_TZ)
+                    if dt.strftime("%Y-%m-%d") != today_pt:
                         continue
                 except Exception:
                     continue
@@ -1983,49 +2012,49 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
     next_trading_day = now_et + timedelta(days=1)
     while next_trading_day.weekday() >= 5:
         next_trading_day += timedelta(days=1)
-    next_day_label = next_trading_day.strftime("%Y-%m-%d")
+    next_day_label = next_trading_day.astimezone(PACIFIC_TZ).strftime("%Y-%m-%d")
 
     improvements: list[str] = []
 
     if day_pnl < 0 or (win_rate is not None and win_rate < 0.5):
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): tighten entries by raising buy threshold by +0.02 and cap new risk to 0.60% per trade until accuracy improves."
+            f"Tomorrow ({next_day_label} PT): tighten entries by raising buy threshold by +0.02 and cap new risk to 0.60% per trade until accuracy improves."
         )
     else:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): keep risk at 0.75% per trade, but only open new positions when score and market regime agree."
+            f"Tomorrow ({next_day_label} PT): keep risk at 0.75% per trade, but only open new positions when score and market regime agree."
         )
 
     if closes_count == 0:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): shorten time-in-trade review cadence and force an end-of-day exit check at 15:50 ET for stale positions."
+            f"Tomorrow ({next_day_label} PT): shorten time-in-trade review cadence and force an end-of-day exit check at 12:50 PT for stale positions."
         )
     elif win_rate is not None and win_rate < 0.5:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): tighten stop discipline by trimming loser hold time and requiring stronger follow-through after entry."
+            f"Tomorrow ({next_day_label} PT): tighten stop discipline by trimming loser hold time and requiring stronger follow-through after entry."
         )
     else:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): keep current exit logic and review any stop-outs for slippage before next session."
+            f"Tomorrow ({next_day_label} PT): keep current exit logic and review any stop-outs for slippage before next session."
         )
 
     total_post = sum(post_status_counts.values())
     too_fresh_count = int(post_status_counts.get("too_fresh", 0))
     if total_post == 0:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): ensure post-analysis snapshots are captured during market hours to maintain learning signal quality."
+            f"Tomorrow ({next_day_label} PT): ensure post-analysis snapshots are captured during market hours to maintain learning signal quality."
         )
     elif too_fresh_count / max(total_post, 1) >= 0.5:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): reduce too-fresh evaluations by delaying evaluation checks and prioritizing mature prior runs."
+            f"Tomorrow ({next_day_label} PT): reduce too-fresh evaluations by delaying evaluation checks and prioritizing mature prior runs."
         )
     else:
         improvements.append(
-            f"Tomorrow ({next_day_label} ET): maintain current learning cadence and monitor post-analysis accuracy drift run-to-run."
+            f"Tomorrow ({next_day_label} PT): maintain current learning cadence and monitor post-analysis accuracy drift run-to-run."
         )
 
     lines = [
-        f"# Daily Strategy Summary ({today_et} ET)",
+        f"# Daily Strategy Summary ({today_pt} PT)",
         "",
         "## Performance",
         f"- Runs today: `{runs_count}`",
@@ -2053,10 +2082,11 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
     latest_dir.mkdir(parents=True, exist_ok=True)
     (latest_dir / "daily_summary.md").write_text("\n".join(lines), encoding="utf-8")
 
-    hist_path = base_dir / "history" / f"daily_summary_{today_et.replace('-', '')}.md"
+    hist_path = base_dir / "history" / f"daily_summary_{today_pt.replace('-', '')}.md"
     hist_path.write_text("\n".join(lines), encoding="utf-8")
 
-    state["last_date_et"] = today_et
+    state["last_date_pt"] = today_pt
+    state["last_date_et"] = today_pt
     state["last_generated_run_ts"] = run_ts
     save_daily_summary_state(base_dir, state)
 
@@ -2068,7 +2098,7 @@ def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positio
     lines = [
         "# Portfolio Report",
         "",
-        f"Timestamp (UTC): `{summary.get('timestamp_utc', '')}`",
+        f"Timestamp (PT): `{format_iso_utc_to_pt(str(summary.get('timestamp_utc', '')))}`",
         f"Start Equity: `${safe_float(summary.get('start_equity')):,.2f}`",
         f"Simulation Balance: `${safe_float(summary.get('simulation_balance'), safe_float(summary.get('end_equity'))):,.2f}`",
         f"Peak Equity: `${safe_float(summary.get('peak_equity')):,.2f}`",
@@ -2742,13 +2772,13 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     )
 
     md_lines = [
-        f"# Top 10 Picks ({ts} UTC)",
+        f"# Top 10 Picks ({format_run_ts_pt(ts)})",
         "",
         f"Market regime: **{market_ctx.get('regime', 'unknown')}**",
         f"Market session: **{market_ctx.get('market_session', 'unknown')}** "
-        f"(`open={market_ctx.get('market_open', False)}`; ET {market_ctx.get('market_time_et', '')})",
+        f"(`open={market_ctx.get('market_open', False)}`; PT {market_ctx.get('market_time_pt', '')})",
         f"Price reference: `{market_ctx.get('price_reference_mode', '')}` "
-        f"(close date ET: {market_ctx.get('price_reference_close_date_et', '')})",
+        f"(close date PT: {market_ctx.get('price_reference_close_date_pt', '')})",
         "",
         "## Portfolio",
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
@@ -3131,7 +3161,7 @@ def run_once(base_dir: Path, universe_count: int, enable_after_hours: bool) -> P
             "category_trend",
         ],
         "price_reference_mode": "last_regular_close" if not bool(mkt.get("market_open")) else "intraday_last_trade",
-        "price_reference_close_date_et": previous_trading_day_et(),
+        "price_reference_close_date_pt": previous_trading_day_pt(),
         "weekend_reference": "previous_trading_day_close" if str(mkt.get("market_session", "")) == "weekend" else "",
         "earnings_catalyst": {
             "enabled": True,
@@ -3293,12 +3323,12 @@ def save_symbol_summary(
     latest_dir.mkdir(parents=True, exist_ok=True)
 
     lines = [
-        f"# Symbol Summary: {symbol} ({ts} UTC)",
+        f"# Symbol Summary: {symbol} ({format_run_ts_pt(ts)})",
         "",
         f"Status: `{summary_meta.get('status', 'unknown')}`",
         f"Market regime: **{market_ctx.get('regime', 'unknown')}**",
         f"Market session: **{market_ctx.get('market_session', 'unknown')}** "
-        f"(`open={market_ctx.get('market_open', False)}`; ET {market_ctx.get('market_time_et', '')})",
+        f"(`open={market_ctx.get('market_open', False)}`; PT {market_ctx.get('market_time_pt', '')})",
         "",
         "Analysis order: `fundamental -> technical -> news -> market_trend -> category_trend`",
         "",
@@ -3523,12 +3553,12 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         pd.DataFrame().to_csv(run_dir / "candidates.csv", index=False)
 
     note = [
-        f"# Top 10 Picks ({ts} UTC)",
+        f"# Top 10 Picks ({format_run_ts_pt(ts)})",
         "",
         "Market regime: **stale_snapshot**",
         f"Market session: **{mkt.get('market_session', 'unknown')}** "
-        f"(`open={mkt.get('market_open', False)}`; ET {mkt.get('market_time_et', '')})",
-        f"Price reference: `last_regular_close` (close date ET: {previous_trading_day_et()})",
+        f"(`open={mkt.get('market_open', False)}`; PT {mkt.get('market_time_pt', '')})",
+        f"Price reference: `last_regular_close` (close date PT: {previous_trading_day_pt()})",
         "",
         "## Portfolio",
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
@@ -3602,7 +3632,7 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         "market_open": mkt.get("market_open"),
         "market_session": mkt.get("market_session"),
         "price_reference_mode": "last_regular_close",
-        "price_reference_close_date_et": previous_trading_day_et(),
+        "price_reference_close_date_pt": previous_trading_day_pt(),
         "weekend_reference": "previous_trading_day_close" if str(mkt.get("market_session", "")) == "weekend" else "",
         "next_open_et": mkt.get("next_open_et"),
         "next_close_et": mkt.get("next_close_et"),
