@@ -1,7 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
+data/
 data/logs/*.log
 data/runs/
 data/latest/
 data/history/
+data/today
+data/simple
+.idea
