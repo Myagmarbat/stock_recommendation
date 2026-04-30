@@ -12,15 +12,25 @@ Automated scanner that:
 - Applies run-to-run feedback learning so the next run uses updated logic immediately.
 - Tracks US market session status and next open/close times.
 - Uses regular-session close pricing as the reference when the market is closed.
-- Tracks virtual portfolio performance from fixed `capital_balance` `$10,000` while updating `simulation_balance` every run.
+- Tracks paper-trading performance from fixed `capital_balance` `$10,000` while carrying the current `paper_balance` into the next run.
 - Generates one end-of-day strategy summary per weekday after 4:00 PM ET with next-day improvement actions.
 - Uses conservative filtering by default and prefers stocks-first behavior with `NO_OPTION`.
 
 ## Setup
 
+Windows:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -34,47 +44,89 @@ pip install -r requirements.txt
 
 ## Run once
 
+Windows:
+
 ```powershell
 python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json
 ```
 
-Daily partition example:
+macOS:
+
+```bash
+python stock_option_agent/agent.py --base-dir ./data --universe-count 50 --config ./config/agent_config.json
+```
+
+Daily partition example on Windows:
 
 ```powershell
 $dayKey = Get-Date -Format "yyyyMMdd"
 python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --universe-count 50 --config .\config\agent_config.json
 ```
 
+Daily partition example on macOS:
+
+```bash
+day_key="$(date +%Y%m%d)"
+python stock_option_agent/agent.py --base-dir "./data/daily/$day_key" --universe-count 50 --config ./config/agent_config.json
+```
+
 ## Run one symbol summary
+
+Windows:
 
 ```powershell
 python .\stock_option_agent\agent.py --base-dir .\data --symbol AAPL --config .\config\agent_config.json
 ```
 
-Output files:
-- `data/latest/symbol_summary_AAPL.md`
-- `data/latest/symbol_summary_AAPL.csv`
-- `data/history/symbol_summary_AAPL_history.csv`
-- `data/runs/<timestamp>/symbol_summary_AAPL.md`
+macOS:
 
-## Set real balance (one-shot override)
+```bash
+python stock_option_agent/agent.py --base-dir ./data --symbol AAPL --config ./config/agent_config.json
+```
+
+Output files:
+- `data/today/latest/symbol_summary_AAPL.md`
+- `data/today/latest/symbol_summary_AAPL.csv`
+- `data/today/history/symbol_summary_AAPL_history.csv`
+- `data/today/runs/<timestamp>/symbol_summary_AAPL.md`
+
+## Set paper budget (one-shot override)
+
+Windows:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 $dayKey = Get-Date -Format "yyyyMMdd"
-python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --set-sim-budget 10000 --config .\config\agent_config.json
+python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --set-paper-budget 10000 --config .\config\agent_config.json
+```
+
+macOS:
+
+```bash
+source .venv/bin/activate
+day_key="$(date +%Y%m%d)"
+python stock_option_agent/agent.py --base-dir "./data/daily/$day_key" --set-paper-budget 10000 --config ./config/agent_config.json
 ```
 
 Notes:
-- Updates persistent state file: `data/portfolio/state.json`
+- Updates persistent paper-trading state file: `data/portfolio/state.json`
 - Resets open positions and run counters while keeping `capital_balance` fixed
+- Deprecated aliases still accepted for compatibility: `--set-sim-budget`, `--set-real-balance`
 
 After-hours handling:
 - Default: disabled (regular session pricing only).
 - Enable explicitly:
 
+Windows:
+
 ```powershell
 python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json --enable-after-hours
+```
+
+macOS:
+
+```bash
+python stock_option_agent/agent.py --base-dir ./data --universe-count 50 --config ./config/agent_config.json --enable-after-hours
 ```
 
 ## News tuning
@@ -85,15 +137,21 @@ python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --con
   - `notifications`: Telegram alerts and cooldown
   - `trading`:
     - `real_trading_capital`
-    - `simulation_initial_capital`
+    - `paper_initial_capital`
     - `stock_only`
     - `include_downtrend_symbols` and `downtrend_symbol_ratio`
     - `full_budget_deploy` and `full_deploy_target_pct`
 - Legacy per-file configs are still supported but no longer required.
-- Enable after-hours in the Windows runner explicitly:
+- Deprecated config aliases still load when present: `simulation_initial_capital`, `initial_capital`.
+- `paper_initial_capital` is used only to seed the first portfolio state. After that, `data/portfolio/state.json` is the source of truth and the paper balance changes through simulated buys, sells, and mark-to-market P/L.
+Enable after-hours in the platform runner explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHours
+```
+
+```bash
+ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
 ```
 
 ## Trading mode
@@ -103,18 +161,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
 - Full deployment mode:
   - `trading.full_budget_deploy = true`
   - `trading.full_deploy_target_pct = 1.0`
-  - Uses up to about 100% of current simulation equity, subject to drawdown controls and exposure headroom
+  - Uses up to about 100% of current paper equity, subject to drawdown controls and exposure headroom
 
 ## Output
 
 - Quickest view: `data/simple/`
-- Full snapshot per run: `data/runs/<timestamp>/...`
-- Current recommendation: `data/latest/top10.csv` and `data/latest/top10.md`
-- On-demand single-symbol summary: `data/latest/symbol_summary_<SYMBOL>.md`
+- Full snapshot per run: `data/today/runs/<timestamp>/...`
+- Current recommendation: `data/today/latest/top10.csv` and `data/today/latest/top10.md`
+- On-demand single-symbol summary: `data/today/latest/symbol_summary_<SYMBOL>.md`
 - `top10.md` includes `Daily Trading Section` and `Earnings Swing Section`
-- `top10.md` also includes a `Simulation Budget` section that explains:
+- `top10.md` also includes a `Paper Budget` section that explains:
   - fixed initial benchmark capital
-  - current mark-to-market simulation equity
+  - current mark-to-market paper equity
   - cash on hand versus current exposure
   - fresh deployable budget after exposure and drawdown controls
   - improvement actions when budget is below benchmark or drawdown controls are active
@@ -124,27 +182,27 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
 - Earnings catalyst fields: `upcoming_earnings_days`, `earnings_event_score`
 - Execution timing: `NOW` or `NEXT_MARKET_OPEN`
 - History outputs:
-  - `data/history/top10_history.csv`
-  - `data/history/top10_hourly.csv`
-  - `data/history/top10_daily.csv`
-  - `data/history/post_analysis_history.jsonl`
-  - `data/history/equity_curve.csv`
-  - `data/history/trades_log.csv`
+  - `data/today/history/top10_history.csv`
+  - `data/today/history/top10_hourly.csv`
+  - `data/today/history/top10_daily.csv`
+  - `data/today/history/post_analysis_history.jsonl`
+  - `data/today/history/equity_curve.csv`
+  - `data/today/history/trades_log.csv`
 - Portfolio outputs:
-  - `data/latest/portfolio_status.json`
-  - `data/latest/portfolio_report.md`
-  - `data/latest/alerts.json`
-  - `data/latest/last_alert.txt`
+  - `data/today/latest/portfolio_status.json`
+  - `data/today/latest/portfolio_report.md`
+  - `data/today/latest/alerts.json`
+  - `data/today/latest/last_alert.txt`
 - Runtime map:
-  - `data/today` -> junction to the current day partition
+  - `data/today` -> junction on Windows or symlink on macOS to the current day partition
   - `data/daily/YYYYMMDD/` -> primary partitioned storage
   - `data/model/` -> adaptive model parameters
-  - `data/portfolio/` -> persistent state
+  - `data/portfolio/` -> persistent paper-trading state
   - `data/simple/` -> simplified outputs
 - Daily summary outputs:
-  - `data/latest/daily_summary.md`
-  - `data/history/daily_summary_YYYYMMDD.md`
-  - `data/history/daily_summary_state.json`
+  - `data/today/latest/daily_summary.md`
+  - `data/today/history/daily_summary_YYYYMMDD.md`
+  - `data/today/history/daily_summary_state.json`
 
 ## Where To Look After A Run
 
@@ -179,7 +237,7 @@ Most useful files after the scheduler runs:
 ## Portfolio Strategy (Low Risk)
 
 - Capital balance: `$10,000` fixed benchmark
-- Simulation balance: mark-to-market equity updated every run from simulated trades and open-position repricing
+- Paper balance: mark-to-market equity updated every run from paper trades and open-position repricing
 - Risk per trade: `0.75%` of equity
 - Max stock allocation per position: `12%`
 - Max options allocation per position: `1%`
@@ -196,21 +254,24 @@ Most useful files after the scheduler runs:
 - Behavior:
   - Increases target exposure up to the configured deploy percentage
   - Distributes available cash across actionable picks each run
-  - Keeps `capital_balance` fixed while `simulation_balance` reflects full-deployment P/L
+  - Keeps `capital_balance` fixed while `paper_balance` reflects full-deployment P/L
   - Still limits new deployment by current cash and remaining exposure headroom
 
-## How To Read Simulation Budget
+## How To Read Paper Budget
 
+- The paper budget is a persistent paper-trading account.
+- Each run starts from `data/portfolio/state.json`, marks existing paper positions to the latest available price, closes positions when stop/target/max-hold/opposite-advice rules trigger, then opens new paper positions only with remaining cash and exposure headroom.
+- The fixed benchmark capital is only a reporting baseline; purchases and sells use the carried-forward paper cash and open-position value from prior runs and prior days.
 - `Initial benchmark capital`: fixed reporting baseline, normally `$10,000`
-- `Run start budget`: simulation equity at the start of the current run
-- `Current equity`: cash plus marked value of open simulated positions
+- `Run start budget`: paper equity at the start of the current run
+- `Current equity`: cash plus marked value of open paper positions
 - `Cash on hand`: undeployed cash available before new recommendations
 - `Current exposure`: capital currently tied up in open positions
 - `Fresh deployable budget now`: additional capital that can still be deployed after exposure caps and drawdown controls
 - `Recommended deploy (risk-capped)`: the new recommendation budget after applying both position-sizing logic and portfolio-level caps
 
 Why it can be lower than the initial budget:
-- realized losses reduce simulation equity
+- realized losses reduce paper equity
 - unrealized losses on open positions reduce mark-to-market equity
 - drawdown controls can tighten exposure and risk per trade until equity recovers
 

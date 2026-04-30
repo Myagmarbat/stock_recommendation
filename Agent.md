@@ -2,7 +2,7 @@
 
 ## Objective
 Run a Yahoo Finance driven scanner every 5 minutes, analyze the top 50 symbols, and output top 10 opportunity picks for stocks/options with buy/sell direction and trade levels.
-Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000` while `simulation_balance` updates on every run.
+Track paper portfolio growth or decline from fixed `capital_balance` `$10,000` while `paper_balance` carries forward and updates on every run.
 
 ## Run Format
 - Universe source: Yahoo predefined screeners `day_gainers` and `day_losers`, top 50 symbols (default 60/40 mix).
@@ -62,7 +62,7 @@ Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000`
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.log`
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.stdout.log`
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.stderr.log`
-- Global persistent budget state:
+- Global persistent paper-budget state:
   - `data/portfolio/state.json`
 
 ## Automation
@@ -87,8 +87,8 @@ Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000`
   - `data/today/latest/`
   - `data/today/logs/`
   - `data/simple/`
-- Real-balance override command:
-  - `python stock_option_agent/agent.py --base-dir data/daily/YYYYMMDD --set-sim-budget <USD> --config config/agent_config.json`
+- Paper-budget override command:
+  - `python stock_option_agent/agent.py --base-dir data/daily/YYYYMMDD --set-paper-budget <USD> --config config/agent_config.json`
   - Writes `data/portfolio/state.json` and resets open positions for clean resync
 
 ## Notes
@@ -98,11 +98,14 @@ Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000`
 - Conservative profile uses stocks-first behavior and defaults to `NO_OPTION`.
 - Unified runtime config is stored in `config/agent_config.json`.
 - `trading.real_trading_capital` is fixed capital used for quantity recommendations.
-- `trading.simulation_initial_capital` is the fixed initial benchmark for simulation reporting and first-run state.
-- `simulation_balance` is live mark-to-market equity and can move below the initial benchmark after realized or unrealized losses.
+- `trading.paper_initial_capital` is the fixed initial benchmark for paper-budget reporting and first-run state only.
+- Persisted `data/portfolio/state.json` is the source of truth after the first run; do not reinitialize paper cash or equity from config during normal runs.
+- `paper_balance` is live mark-to-market paper equity and can move below the initial benchmark after realized or unrealized losses.
+- `simulation_balance`, `peak_simulation_balance`, and `--set-sim-budget` are deprecated compatibility aliases only.
 - `trading.full_budget_deploy` and `trading.full_deploy_target_pct` enable aggressive full-cash deployment.
-- Portfolio state uses fixed `capital_balance`, live `simulation_balance`, current `cash`, and open-position exposure.
-- In generated `top10.md`, the `Simulation Budget` section should be interpreted as:
+- Portfolio state uses fixed `capital_balance`, live `paper_balance`, current `cash`, and open-position exposure.
+- Paper trading flow per run: load `data/portfolio/state.json`, merge duplicate lots, mark open positions, close positions on stop/target/max-hold/opposite-advice rules, then open or top up positions using only paper cash and exposure headroom.
+- In generated `top10.md`, the `Paper Budget` section should be interpreted as:
   - benchmark capital: fixed reference amount
   - current equity: cash plus current marked value of open positions
   - fresh deployable budget: remaining deployable capital after exposure caps and drawdown controls

@@ -44,9 +44,15 @@ Generate top picks from Yahoo Finance data using a low-risk, stock-first process
    - Evaluate previous run recommendations (~10 minutes earlier) as correct/incorrect using latest available price.
    - If recommendation was incorrect, adjust model weights/thresholds.
    - Persist adapted parameters for the next run.
-10. Daily summary loop (once after market close on weekdays):
+10. Paper-trading loop (every run):
+   - Load carried-forward paper state from `data/portfolio/state.json`.
+   - Merge duplicate open lots for the same symbol/instrument/direction.
+   - Mark open paper positions to latest available price, falling back to last/entry price when needed.
+   - Close paper positions on stop, target, max-hold, or opposite-advice rules.
+   - Open or top up positions only with remaining paper cash and exposure headroom.
+11. Daily summary loop (once after market close on weekdays):
    - Produce day-level gain/loss, run-count, recommendation effectiveness, and improvement notes.
-11. On-demand symbol summary mode:
+12. On-demand symbol summary mode:
    - Accept a single symbol input and output one focused recommendation summary with full score breakdown and trade levels.
 
 ## Output Format
@@ -73,6 +79,13 @@ Per symbol include:
 - `stock_instruction`
 - `option_instruction`
 - `brief_reason`
+- Paper-budget fields in reports:
+  - `paper_balance`
+  - `cash`
+  - `current_exposure`
+  - `fresh deployable budget`
+  - `risk-capped recommended deploy`
+- Persist paper-trading state in `data/portfolio/state.json`; normal runs must carry forward current `paper_balance`, cash, and open positions instead of reinitializing from config.
 
 For symbol mode also persist:
 - `data/latest/symbol_summary_<SYMBOL>.md`

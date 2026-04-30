@@ -28,7 +28,6 @@ YAHOO_SCREENER_URL_ALT = "https://query2.finance.yahoo.com/v1/finance/screener/p
 YAHOO_GAINERS_PAGE = "https://finance.yahoo.com/markets/stocks/gainers/"
 DEFAULT_BASE_DIR = Path("data")
 MODEL_STATE_PATH = Path("data/model/model_params.json")
-PORTFOLIO_STATE_PATH = Path("data/portfolio/state.json")
 AGENT_CONFIG_PATH = Path("config/agent_config.json")
 US_MARKET_TZ = ZoneInfo("America/New_York")
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
@@ -262,7 +261,7 @@ DEFAULT_TRADING_CONFIG = {
     "stock_only": True,
     "allow_shorting": True,
     "real_trading_capital": 10000.0,
-    "simulation_initial_capital": 10000.0,
+    "paper_initial_capital": 10000.0,
     "include_downtrend_symbols": True,
     "downtrend_symbol_ratio": 0.4,
     "full_budget_deploy": False,
@@ -1598,6 +1597,10 @@ def data_root_dir(base_dir: Path) -> Path:
     return base_dir
 
 
+def portfolio_state_path(base_dir: Path) -> Path:
+    return data_root_dir(base_dir) / "portfolio" / "state.json"
+
+
 def refresh_simple_view(base_dir: Path, run_ts: str) -> None:
     root = data_root_dir(base_dir)
     simple_dir = root / "simple"
@@ -1661,6 +1664,8 @@ def portfolio_default_state() -> dict[str, Any]:
     return {
         "capital_balance": INITIAL_CAPITAL,
         "cash": INITIAL_CAPITAL,
+        "paper_balance": INITIAL_CAPITAL,
+        "peak_paper_balance": INITIAL_CAPITAL,
         "simulation_balance": INITIAL_CAPITAL,
         "peak_simulation_balance": INITIAL_CAPITAL,
         "run_count": 0,
@@ -1671,7 +1676,7 @@ def portfolio_default_state() -> dict[str, Any]:
 
 
 def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
-    path = PORTFOLIO_STATE_PATH
+    path = portfolio_state_path(base_dir)
     if not path.exists():
         # Legacy daily state fallback/migration path.
         legacy = base_dir / "portfolio" / "state.json"
@@ -1685,13 +1690,19 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
                         out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
                     if "simulation_balance" not in data:
                         out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+                    if "paper_balance" not in data:
+                        out["paper_balance"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+                    if "cash" not in data:
+                        out["cash"] = safe_float(out.get("paper_balance"), safe_float(out.get("simulation_balance"), INITIAL_CAPITAL))
                     if "peak_simulation_balance" not in data:
                         out["peak_simulation_balance"] = max(
                             safe_float(out.get("simulation_balance"), INITIAL_CAPITAL),
                             safe_float(out.get("capital_balance"), INITIAL_CAPITAL),
                         )
+                    if "peak_paper_balance" not in data:
+                        out["peak_paper_balance"] = safe_float(out.get("peak_simulation_balance"), safe_float(out.get("paper_balance"), INITIAL_CAPITAL))
                     out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
-                    out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+                    out["equity"] = safe_float(out.get("paper_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
                     if not isinstance(out.get("open_positions"), list):
                         out["open_positions"] = []
                     return out
@@ -1711,42 +1722,57 @@ def load_portfolio_state(base_dir: Path) -> dict[str, Any]:
         out["capital_balance"] = safe_float(data.get("initial_capital"), INITIAL_CAPITAL)
     if "simulation_balance" not in data:
         out["simulation_balance"] = safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+    if "paper_balance" not in data:
+        out["paper_balance"] = safe_float(out.get("simulation_balance"), safe_float(data.get("equity"), safe_float(out.get("cash"), INITIAL_CAPITAL)))
+    if "cash" not in data:
+        out["cash"] = safe_float(out.get("paper_balance"), safe_float(out.get("simulation_balance"), safe_float(data.get("equity"), INITIAL_CAPITAL)))
     if "peak_simulation_balance" not in data:
         out["peak_simulation_balance"] = max(
             safe_float(out.get("simulation_balance"), INITIAL_CAPITAL),
             safe_float(out.get("capital_balance"), INITIAL_CAPITAL),
         )
+    if "peak_paper_balance" not in data:
+        out["peak_paper_balance"] = safe_float(out.get("peak_simulation_balance"), safe_float(out.get("paper_balance"), INITIAL_CAPITAL))
+    # Keep legacy simulation keys mirrored to the newer paper-trading keys.
+    out["simulation_balance"] = safe_float(out.get("paper_balance"), safe_float(out.get("simulation_balance"), INITIAL_CAPITAL))
+    out["peak_simulation_balance"] = safe_float(out.get("peak_paper_balance"), safe_float(out.get("peak_simulation_balance"), INITIAL_CAPITAL))
     # Keep aliases in memory for older call sites that may still read them.
     out["initial_capital"] = safe_float(out.get("capital_balance"), INITIAL_CAPITAL)
-    out["equity"] = safe_float(out.get("simulation_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
+    out["equity"] = safe_float(out.get("paper_balance"), safe_float(out.get("cash"), INITIAL_CAPITAL))
     if not isinstance(out.get("open_positions"), list):
         out["open_positions"] = []
     return out
 
 
 def save_portfolio_state(base_dir: Path, state: dict[str, Any]) -> None:
-    path = PORTFOLIO_STATE_PATH
+    path = portfolio_state_path(base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def set_simulation_budget(base_dir: Path, balance: float) -> dict[str, Any]:
+def set_paper_budget(base_dir: Path, balance: float) -> dict[str, Any]:
     b = max(0.0, round(float(balance), 4))
     state = load_portfolio_state(base_dir)
-    # Keep capital_balance as fixed reporting baseline; reset only live simulation balance.
+    # Keep capital_balance as fixed reporting baseline; reset only live paper-trading balance.
     state["capital_balance"] = INITIAL_CAPITAL
     state["cash"] = b
+    state["paper_balance"] = b
+    state["peak_paper_balance"] = b
     state["simulation_balance"] = b
     state["peak_simulation_balance"] = b
     # Backward-compatible aliases.
     state["initial_capital"] = state["capital_balance"]
-    state["equity"] = state["simulation_balance"]
+    state["equity"] = state["paper_balance"]
     state["run_count"] = 0
     state["open_positions"] = []
     state["closed_positions_count"] = 0
     state["last_updated_utc"] = now_utc().strftime("%Y%m%d_%H%M%S")
     save_portfolio_state(base_dir, state)
     return state
+
+
+def set_simulation_budget(base_dir: Path, balance: float) -> dict[str, Any]:
+    return set_paper_budget(base_dir, balance)
 
 
 def fetch_symbol_price(symbol: str, enable_after_hours: bool) -> float:
@@ -1775,6 +1801,90 @@ def mark_position_value(position: dict[str, Any], current_price: float) -> float
     ret = (current_price / entry_price) - 1.0
     gross = 1.0 + (direction * leverage * ret)
     return round(max(0.0, alloc * gross), 4)
+
+
+def normalize_open_positions(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw in positions:
+        if not isinstance(raw, dict):
+            continue
+        symbol = str(raw.get("symbol", "")).strip().upper()
+        instrument = str(raw.get("instrument", "STOCK")).strip().upper()
+        direction = str(raw.get("direction", "LONG")).strip().upper()
+        if not symbol:
+            continue
+        pos = dict(raw)
+        pos["symbol"] = symbol
+        pos["instrument"] = instrument
+        pos["direction"] = direction
+        alloc = max(0.0, safe_float(pos.get("capital_allocated"), 0.0))
+        if alloc <= 0:
+            continue
+        key = (symbol, instrument, direction)
+        if key not in merged:
+            merged[key] = pos
+            continue
+
+        existing = merged[key]
+        existing_alloc = max(0.0, safe_float(existing.get("capital_allocated"), 0.0))
+        total_alloc = existing_alloc + alloc
+        if total_alloc <= 0:
+            continue
+
+        for field in ("entry_underlying_price", "stop_price", "target_price"):
+            existing_value = safe_float(existing.get(field), 0.0)
+            new_value = safe_float(pos.get(field), 0.0)
+            if existing_value > 0 and new_value > 0:
+                existing[field] = round(((existing_value * existing_alloc) + (new_value * alloc)) / total_alloc, 4)
+            elif new_value > 0:
+                existing[field] = round(new_value, 4)
+
+        existing["capital_allocated"] = round(total_alloc, 4)
+        existing["opened_run"] = min(int(existing.get("opened_run", 0) or 0), int(pos.get("opened_run", 0) or 0))
+        existing["hold_runs"] = max(int(existing.get("hold_runs", 0) or 0), int(pos.get("hold_runs", 0) or 0))
+        existing["entry_score"] = max(safe_float(existing.get("entry_score"), 0.0), safe_float(pos.get("entry_score"), 0.0))
+        if pos.get("last_price"):
+            existing["last_price"] = pos.get("last_price")
+        if pos.get("last_value"):
+            existing["last_value"] = pos.get("last_value")
+    return list(merged.values())
+
+
+def position_price_for_mark(position: dict[str, Any], enable_after_hours: bool) -> tuple[float, str]:
+    symbol = str(position.get("symbol", ""))
+    current_price = fetch_symbol_price(symbol, enable_after_hours)
+    if current_price > 0:
+        return current_price, "live"
+    last_price = safe_float(position.get("last_price"), 0.0)
+    if last_price > 0:
+        return last_price, "last"
+    entry_price = safe_float(position.get("entry_underlying_price"), 0.0)
+    if entry_price > 0:
+        return entry_price, "entry_fallback"
+    return 0.0, "unavailable"
+
+
+def refresh_position_mark(position: dict[str, Any], price: float, price_source: str) -> float:
+    value = mark_position_value(position, price)
+    position["last_price"] = round(price, 4)
+    position["last_value"] = round(value, 4)
+    position["last_price_source"] = price_source
+    position["last_marked_utc"] = now_utc().strftime("%Y%m%d_%H%M%S")
+    return value
+
+
+def add_to_position(position: dict[str, Any], add_alloc: float, add_price: float, run_count: int) -> None:
+    old_alloc = max(0.0, safe_float(position.get("capital_allocated"), 0.0))
+    add_alloc = max(0.0, safe_float(add_alloc, 0.0))
+    total_alloc = old_alloc + add_alloc
+    if add_alloc <= 0 or total_alloc <= 0 or add_price <= 0:
+        return
+    old_entry = safe_float(position.get("entry_underlying_price"), add_price)
+    position["entry_underlying_price"] = round(((old_entry * old_alloc) + (add_price * add_alloc)) / total_alloc, 4)
+    position["capital_allocated"] = round(total_alloc, 4)
+    position["last_price"] = round(add_price, 4)
+    position["last_value"] = round(mark_position_value(position, add_price), 4)
+    position["last_topup_run"] = run_count
 
 
 def should_close_position(position: dict[str, Any], current_price: float) -> tuple[bool, str]:
@@ -1888,6 +1998,7 @@ def build_budget_controls(
 
 def append_equity_curve(base_dir: Path, row: dict[str, Any]) -> None:
     path = base_dir / "history" / "equity_curve.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
@@ -1900,6 +2011,7 @@ def append_trade_events(base_dir: Path, events: list[dict[str, Any]]) -> None:
     if not events:
         return
     path = base_dir / "history" / "trades_log.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(events[0].keys()))
@@ -2120,7 +2232,7 @@ def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positio
         "",
         f"Timestamp (PT): `{format_iso_utc_to_pt(str(summary.get('timestamp_utc', '')))}`",
         f"Start Equity: `${safe_float(summary.get('start_equity')):,.2f}`",
-        f"Simulation Balance: `${safe_float(summary.get('simulation_balance'), safe_float(summary.get('end_equity'))):,.2f}`",
+        f"Paper Balance: `${safe_float(summary.get('paper_balance'), safe_float(summary.get('simulation_balance'), safe_float(summary.get('end_equity')))):,.2f}`",
         f"Peak Equity: `${safe_float(summary.get('peak_equity')):,.2f}`",
         f"Drawdown From Peak: `{safe_float(summary.get('drawdown_pct')):.2f}%`",
         f"Benchmark Capital (fixed): `${safe_float(summary.get('capital_balance'), safe_float(summary.get('initial_capital'))):,.2f}`",
@@ -2446,10 +2558,10 @@ def update_portfolio(
     state = load_portfolio_state(base_dir)
     # capital_balance is a fixed benchmark (e.g., 10000) and should not drift run-to-run.
     base_capital = INITIAL_CAPITAL
-    start_equity = safe_float(state.get("simulation_balance"), safe_float(state.get("equity"), base_capital))
+    start_equity = safe_float(state.get("paper_balance"), safe_float(state.get("simulation_balance"), safe_float(state.get("equity"), base_capital)))
     cash = safe_float(state.get("cash"), base_capital)
     run_count = int(state.get("run_count", 0)) + 1
-    open_positions: list[dict[str, Any]] = list(state.get("open_positions", []))
+    open_positions: list[dict[str, Any]] = normalize_open_positions(list(state.get("open_positions", [])))
     candidate_rows = top10.to_dict(orient="records")
     advice_rows = (advice_df if advice_df is not None else top10).to_dict(orient="records")
     advice_by_symbol = {str(r.get("symbol", "")): r for r in advice_rows if str(r.get("symbol", ""))}
@@ -2460,15 +2572,16 @@ def update_portfolio(
 
     for pos in open_positions:
         symbol = str(pos.get("symbol", ""))
-        current_price = fetch_symbol_price(symbol, enable_after_hours)
+        current_price, price_source = position_price_for_mark(pos, enable_after_hours)
+        pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
         if current_price <= 0:
-            pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
             still_open.append(pos)
             continue
 
-        value = mark_position_value(pos, current_price)
-        pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
+        value = refresh_position_mark(pos, current_price, price_source)
         close_now, reason = should_close_position(pos, current_price)
+        if close_now and price_source != "live":
+            reason = f"{reason}_{price_source}"
         if not close_now:
             reason = advice_close_reason(pos, advice_by_symbol.get(symbol))
             close_now = bool(reason)
@@ -2500,7 +2613,7 @@ def update_portfolio(
     equity = cash + open_value
     full_deploy = bool(TRADING_CONFIG.get("full_budget_deploy", False))
     deploy_target_pct = clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0)
-    peak_equity = max(safe_float(state.get("peak_simulation_balance"), start_equity), start_equity, equity)
+    peak_equity = max(safe_float(state.get("peak_paper_balance"), safe_float(state.get("peak_simulation_balance"), start_equity)), start_equity, equity)
     budget_controls = build_budget_controls(start_equity, base_capital, peak_equity, full_deploy, deploy_target_pct)
     target_exposure_pct = safe_float(budget_controls.get("effective_target_exposure_pct"), MAX_PORTFOLIO_EXPOSURE_PCT * 100.0) / 100.0
     max_open_positions = int(budget_controls.get("effective_max_open_positions", 20 if full_deploy else MAX_OPEN_POSITIONS))
@@ -2527,8 +2640,7 @@ def update_portfolio(
             open_value = sum(
                 mark_position_value(
                     p,
-                    fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
-                    or safe_float(p.get("entry_underlying_price"), 0.0),
+                    position_price_for_mark(p, enable_after_hours)[0],
                 )
                 for p in open_positions
             )
@@ -2570,14 +2682,13 @@ def update_portfolio(
             stock_targets = [p for p in open_positions if str(p.get("instrument", "")) == "STOCK"]
             remaining_targets = len(stock_targets)
             for idx, pos0 in enumerate(stock_targets, start=1):
-                if len(open_positions) >= max_open_positions or cash < 100:
+                if cash < 100:
                     break
                 remaining_targets = max(1, remaining_targets)
                 open_value = sum(
                     mark_position_value(
                         p,
-                        fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
-                        or safe_float(p.get("entry_underlying_price"), 0.0),
+                        position_price_for_mark(p, enable_after_hours)[0],
                     )
                     for p in open_positions
                 )
@@ -2589,24 +2700,11 @@ def update_portfolio(
                     remaining_targets -= 1
                     continue
                 symbol = str(pos0.get("symbol", ""))
-                px = fetch_symbol_price(symbol, enable_after_hours)
+                px, price_source = position_price_for_mark(pos0, enable_after_hours)
                 if px <= 0:
-                    px = safe_float(pos0.get("entry_underlying_price"), 0.0)
-                new_pos = {
-                    "id": f"{symbol}_STOCK_{run_count}_TOPUP_{idx}",
-                    "symbol": symbol,
-                    "instrument": "STOCK",
-                    "direction": str(pos0.get("direction", "LONG")),
-                    "leverage": 1.0,
-                    "capital_allocated": round(alloc, 4),
-                    "entry_underlying_price": round(px, 4),
-                    "stop_price": safe_float(pos0.get("stop_price"), 0.0),
-                    "target_price": safe_float(pos0.get("target_price"), 0.0),
-                    "opened_run": run_count,
-                    "hold_runs": 0,
-                    "entry_score": safe_float(pos0.get("entry_score"), 0.0),
-                }
-                open_positions.append(new_pos)
+                    remaining_targets -= 1
+                    continue
+                add_to_position(pos0, alloc, px, run_count)
                 cash -= alloc
                 events.append(
                     {
@@ -2614,11 +2712,11 @@ def update_portfolio(
                         "event": "OPEN",
                         "symbol": symbol,
                         "instrument": "STOCK",
-                        "direction": new_pos.get("direction"),
-                        "entry_price": new_pos.get("entry_underlying_price"),
+                        "direction": pos0.get("direction"),
+                        "entry_price": pos0.get("entry_underlying_price"),
                         "exit_price": "",
-                        "capital_allocated": new_pos.get("capital_allocated"),
-                        "value": new_pos.get("capital_allocated"),
+                        "capital_allocated": round(alloc, 4),
+                        "value": round(alloc, 4),
                         "pnl": 0.0,
                         "reason": "signal_open_full_budget_topup",
                         "hold_runs": 0,
@@ -2635,7 +2733,7 @@ def update_portfolio(
                 if not symbol or symbol in used_symbols:
                     continue
                 open_value = sum(
-                    mark_position_value(p, fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours) or safe_float(p.get("entry_underlying_price"), 0.0))
+                    mark_position_value(p, position_price_for_mark(p, enable_after_hours)[0])
                     for p in open_positions
                 )
                 if open_value >= current_exposure_cap:
@@ -2669,24 +2767,26 @@ def update_portfolio(
     # Re-mark open positions for ending equity.
     end_open_value = 0.0
     for p in open_positions:
-        px = fetch_symbol_price(str(p.get("symbol", "")), enable_after_hours)
+        px, price_source = position_price_for_mark(p, enable_after_hours)
         if px <= 0:
-            px = safe_float(p.get("entry_underlying_price"), 0.0)
-        end_open_value += mark_position_value(p, px)
+            continue
+        end_open_value += refresh_position_mark(p, px, price_source)
     end_equity = cash + end_open_value
 
     run_pnl = end_equity - start_equity
     run_return = (run_pnl / start_equity) if start_equity > 0 else 0.0
     total_return = (end_equity / base_capital - 1.0) if base_capital > 0 else 0.0
-    state["peak_simulation_balance"] = round(max(peak_equity, end_equity), 4)
-    budget_controls = build_budget_controls(end_equity, base_capital, state["peak_simulation_balance"], full_deploy, deploy_target_pct)
+    state["peak_paper_balance"] = round(max(peak_equity, end_equity), 4)
+    state["peak_simulation_balance"] = state["peak_paper_balance"]
+    budget_controls = build_budget_controls(end_equity, base_capital, state["peak_paper_balance"], full_deploy, deploy_target_pct)
 
     state["capital_balance"] = base_capital
     state["cash"] = round(cash, 4)
+    state["paper_balance"] = round(end_equity, 4)
     state["simulation_balance"] = round(end_equity, 4)
     # Backward-compatible aliases.
     state["initial_capital"] = state["capital_balance"]
-    state["equity"] = state["simulation_balance"]
+    state["equity"] = state["paper_balance"]
     state["run_count"] = run_count
     state["open_positions"] = open_positions
     state["last_updated_utc"] = run_ts
@@ -2705,7 +2805,7 @@ def update_portfolio(
             "total_return_pct": round(total_return * 100, 4),
             "cash": round(cash, 4),
             "open_positions": len(open_positions),
-            "peak_equity": round(safe_float(state.get("peak_simulation_balance"), end_equity), 4),
+            "peak_equity": round(safe_float(state.get("peak_paper_balance"), end_equity), 4),
             "drawdown_pct": round(safe_float(budget_controls.get("drawdown_pct"), 0.0), 4),
             "closed_positions_count": int(state.get("closed_positions_count", 0)),
         },
@@ -2718,13 +2818,14 @@ def update_portfolio(
         "capital_balance": base_capital,
         "real_trading_capital": REAL_TRADING_CAPITAL,
         "start_equity": round(start_equity, 4),
+        "paper_balance": round(end_equity, 4),
         "simulation_balance": round(end_equity, 4),
         "run_pnl": round(run_pnl, 4),
         "run_return_pct": round(run_return * 100, 4),
         "total_return_pct": round(total_return * 100, 4),
         "cash": round(cash, 4),
         "current_exposure": round(end_open_value, 4),
-        "peak_equity": round(safe_float(state.get("peak_simulation_balance"), end_equity), 4),
+        "peak_equity": round(safe_float(state.get("peak_paper_balance"), end_equity), 4),
         "drawdown_pct": round(safe_float(budget_controls.get("drawdown_pct"), 0.0), 4),
         "open_positions": len(open_positions),
         "new_events": len(events),
@@ -2741,7 +2842,7 @@ def update_portfolio(
     }
     # Backward-compatible aliases for existing consumers.
     summary["initial_capital"] = summary["capital_balance"]
-    summary["end_equity"] = summary["simulation_balance"]
+    summary["end_equity"] = summary["paper_balance"]
     (latest_dir / "portfolio_status.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     write_portfolio_report(base_dir, summary, open_positions, enable_after_hours)
     return summary
@@ -2751,8 +2852,11 @@ def sizing_equity_from_summary(summary: dict[str, Any]) -> float:
     return max(
         0.0,
         safe_float(
-            summary.get("simulation_balance"),
+            summary.get("paper_balance"),
+            safe_float(
+                summary.get("simulation_balance"),
             safe_float(summary.get("end_equity"), safe_float(summary.get("start_equity"), INITIAL_CAPITAL)),
+            ),
         ),
     )
 
@@ -2802,7 +2906,7 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     budget_plan = build_budget_plan(
         top10,
         safe_float(portfolio_summary.get("start_equity"), sizing_equity),
-        safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), sizing_equity)),
+        safe_float(portfolio_summary.get("paper_balance"), safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), sizing_equity))),
         safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
         budget_controls,
         safe_float(portfolio_summary.get("cash"), 0.0),
@@ -2822,13 +2926,13 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
         f"- Benchmark capital (fixed): `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
         f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
-        f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
+        f"- Paper balance: `${safe_float(portfolio_summary.get('paper_balance'), safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0))):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
         f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
         f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
-        "## Simulation Budget",
+        "## Paper Budget",
         f"- Initial benchmark capital (fixed): `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
@@ -3064,7 +3168,7 @@ def build_budget_plan(
     elif delta_vs_initial > 0:
         budget_status = "above_initial"
     explanation_parts = [
-        "Simulation balance is marked to market each run.",
+        "Paper balance is marked to market each run.",
         "Closed-trade losses and unrealized losses on open positions reduce equity.",
     ]
     if delta_vs_initial < 0:
@@ -3439,8 +3543,8 @@ def save_symbol_summary(
     if row is not None:
         df = add_instruction_columns(pd.DataFrame([asdict(row)]))
         sim_state = load_portfolio_state(base_dir)
-        sim_equity = safe_float(sim_state.get("simulation_balance"), safe_float(sim_state.get("equity"), INITIAL_CAPITAL))
-        peak_equity = max(safe_float(sim_state.get("peak_simulation_balance"), sim_equity), sim_equity)
+        sim_equity = safe_float(sim_state.get("paper_balance"), safe_float(sim_state.get("simulation_balance"), safe_float(sim_state.get("equity"), INITIAL_CAPITAL)))
+        peak_equity = max(safe_float(sim_state.get("peak_paper_balance"), safe_float(sim_state.get("peak_simulation_balance"), sim_equity)), sim_equity)
         full_deploy = bool(TRADING_CONFIG.get("full_budget_deploy", False))
         deploy_target_pct = clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0)
         budget_controls = build_budget_controls(sim_equity, INITIAL_CAPITAL, peak_equity, full_deploy, deploy_target_pct)
@@ -3472,7 +3576,7 @@ def save_symbol_summary(
                 f"- Entry/Target/Stop: `{rec['entry_price']:.2f} / {rec['target_price']:.2f} / {rec['stop_price']:.2f}`",
                 f"- Risk/Reward: `{rec['risk_reward']:.2f}`",
                 "",
-                "## Simulation Budget",
+                "## Paper Budget",
                 f"- Initial benchmark capital (fixed): `${single_budget.get('initial_baseline', 0):,.2f}`",
                 f"- Run start budget: `${single_budget.get('run_start_budget', 0):,.2f}`",
                 f"- Current equity: `${single_budget.get('current_equity', 0):,.2f}`",
@@ -3657,7 +3761,7 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
     budget_plan = build_budget_plan(
         stale_top10,
         safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
-        safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL)),
+        safe_float(portfolio_summary.get("paper_balance"), safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL))),
         safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
         budget_controls,
         safe_float(portfolio_summary.get("cash"), 0.0),
@@ -3682,13 +3786,13 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         f"- Start equity this run: `${portfolio_summary.get('start_equity', 0):,.2f}`",
         f"- Benchmark capital (fixed): `${safe_float(portfolio_summary.get('capital_balance'), safe_float(portfolio_summary.get('initial_capital'), 0)):,.2f}`",
         f"- Real trading capital (fixed): `${portfolio_summary.get('real_trading_capital', 0):,.2f}`",
-        f"- Simulation balance: `${safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0)):,.2f}`",
+        f"- Paper balance: `${safe_float(portfolio_summary.get('paper_balance'), safe_float(portfolio_summary.get('simulation_balance'), safe_float(portfolio_summary.get('end_equity'), 0))):,.2f}`",
         f"- Run P/L: `${portfolio_summary.get('run_pnl', 0):,.2f}` "
         f"({portfolio_summary.get('run_return_pct', 0):.2f}%)",
         f"- Total return: `{portfolio_summary.get('total_return_pct', 0):.2f}%`",
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
-        "## Simulation Budget",
+        "## Paper Budget",
         f"- Initial benchmark capital (fixed): `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
@@ -3800,13 +3904,19 @@ def parse_args() -> argparse.Namespace:
         "--set-real-balance",
         type=float,
         default=None,
-        help="Deprecated alias for --set-sim-budget.",
+        help="Deprecated alias for --set-paper-budget.",
+    )
+    parser.add_argument(
+        "--set-paper-budget",
+        type=float,
+        default=None,
+        help="One-shot: reset persistent paper budget state and exit.",
     )
     parser.add_argument(
         "--set-sim-budget",
         type=float,
         default=None,
-        help="One-shot: reset persistent simulation budget state and exit.",
+        help="Deprecated alias for --set-paper-budget.",
     )
     return parser.parse_args()
 
@@ -3819,9 +3929,12 @@ def main() -> int:
     NEWS_CONFIG = dict(unified.get("news", DEFAULT_NEWS_CONFIG))
     NOTIFICATIONS_CONFIG = dict(unified.get("notifications", DEFAULT_NOTIFICATIONS_CONFIG))
     TRADING_CONFIG = dict(unified.get("trading", DEFAULT_TRADING_CONFIG))
-    # Backward compatibility for older config key "initial_capital".
+    # Backward compatibility for older config keys.
     sim_cap = safe_float(
-        TRADING_CONFIG.get("simulation_initial_capital", TRADING_CONFIG.get("initial_capital", 10000.0)),
+        TRADING_CONFIG.get(
+            "paper_initial_capital",
+            TRADING_CONFIG.get("simulation_initial_capital", TRADING_CONFIG.get("initial_capital", 10000.0)),
+        ),
         10000.0,
     )
     real_cap = safe_float(TRADING_CONFIG.get("real_trading_capital", 10000.0), 10000.0)
@@ -3832,16 +3945,22 @@ def main() -> int:
     # Ensure adaptive model state exists on disk for traceability.
     save_model_params(load_model_params())
     base_dir = Path(args.base_dir)
-    sim_budget_override = args.set_sim_budget if args.set_sim_budget is not None else args.set_real_balance
-    if sim_budget_override is not None:
-        state = set_simulation_budget(base_dir, float(sim_budget_override))
+    paper_budget_override = (
+        args.set_paper_budget
+        if args.set_paper_budget is not None
+        else args.set_sim_budget
+        if args.set_sim_budget is not None
+        else args.set_real_balance
+    )
+    if paper_budget_override is not None:
+        state = set_paper_budget(base_dir, float(paper_budget_override))
         print(
-            "Simulation budget updated. "
+            "Paper budget updated. "
             f"capital_balance={safe_float(state.get('capital_balance'), safe_float(state.get('initial_capital'), 0)):.2f} "
             f"cash={safe_float(state.get('cash'), 0):.2f} "
-            f"simulation_balance={safe_float(state.get('simulation_balance'), safe_float(state.get('equity'), 0)):.2f} "
+            f"paper_balance={safe_float(state.get('paper_balance'), safe_float(state.get('simulation_balance'), safe_float(state.get('equity'), 0))):.2f} "
             f"real_trading_capital={REAL_TRADING_CAPITAL:.2f} "
-            f"state_file={PORTFOLIO_STATE_PATH}"
+            f"state_file={portfolio_state_path(base_dir)}"
         )
         return 0
     symbol = str(args.symbol or "").strip().upper()

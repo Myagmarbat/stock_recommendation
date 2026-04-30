@@ -57,6 +57,10 @@ Run the analysis pipeline automatically in background during US market hours eve
   - `data/daily/YYYYMMDD/latest/portfolio_report.md`
   - `data/daily/YYYYMMDD/latest/alerts.json`
   - `data/daily/YYYYMMDD/latest/daily_summary.md`
+- Global persistent paper-trading state:
+  - `data/portfolio/state.json`
+  - Primary balance key: `paper_balance`
+  - Compatibility aliases may remain in state: `simulation_balance`, `equity`
 - History files:
   - `data/daily/YYYYMMDD/history/top10_history.csv`
   - `data/daily/YYYYMMDD/history/top10_hourly.csv`
@@ -72,6 +76,13 @@ Run the analysis pipeline automatically in background during US market hours eve
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.log`
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.stdout.log`
   - `data/daily/YYYYMMDD/logs/run_<UTC_TIMESTAMP>.stderr.log`
+
+## Paper-Budget Runtime Rules
+- Treat `data/portfolio/state.json` as the paper-trading ledger across runs and days.
+- Do not reset paper cash, open positions, or run count unless the user explicitly runs `--set-paper-budget`.
+- Each cycle must mark existing paper positions, process paper sells/closes, and only then place new paper buys/shorts using remaining paper cash and exposure headroom.
+- Generated reports should call this `Paper Budget`, not `Simulation Budget`.
+- `--set-sim-budget` is a deprecated compatibility alias for `--set-paper-budget`.
 
 ## Reliability Rules
 - Never stop the scheduler because of one failed fetch.
