@@ -7,7 +7,7 @@ Automated scanner that:
 - Detects broad market trend (bullish, bearish, neutral) and adapts recommendations.
 - Produces top 10 picks every run.
 - Stores timestamped outputs for historical analysis.
-- Runs every 5 minutes in background via Windows Task Scheduler during market hours only on weekdays.
+- Runs in background via Windows Task Scheduler or macOS launchd during market hours only on weekdays.
 - Self-adjusts model weights and thresholds after each run based on prior pick correctness.
 - Applies run-to-run feedback learning so the next run uses updated logic immediately.
 - Tracks US market session status and next open/close times.
@@ -29,8 +29,8 @@ pip install -r requirements.txt
 1. Create and activate the virtual environment.
 2. Install dependencies.
 3. Run one manual scan to confirm the environment works.
-4. Install the Windows scheduled task.
-5. Start the scheduled task once if you want an immediate first run.
+4. Install the platform scheduler: Windows Task Scheduler or macOS launchd.
+5. Start the scheduler once if you want an immediate first run.
 
 ## Run once
 
@@ -103,7 +103,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
 - Full deployment mode:
   - `trading.full_budget_deploy = true`
   - `trading.full_deploy_target_pct = 1.0`
-  - Uses up to about 100% of simulation balance
+  - Uses up to about 100% of current simulation equity, subject to drawdown controls and exposure headroom
 
 ## Output
 
@@ -112,6 +112,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
 - Current recommendation: `data/latest/top10.csv` and `data/latest/top10.md`
 - On-demand single-symbol summary: `data/latest/symbol_summary_<SYMBOL>.md`
 - `top10.md` includes `Daily Trading Section` and `Earnings Swing Section`
+- `top10.md` also includes a `Simulation Budget` section that explains:
+  - fixed initial benchmark capital
+  - current mark-to-market simulation equity
+  - cash on hand versus current exposure
+  - fresh deployable budget after exposure and drawdown controls
+  - improvement actions when budget is below benchmark or drawdown controls are active
 - Trade levels per pick: `entry_price`, `target_price`, `stop_price`, `risk_reward`
 - Sizing per run: `stock_qty`, `stock_notional_usd`, `option_contracts`, `option_premium_est_usd`
 - Persistent portfolio state across days: `data/portfolio/state.json`
@@ -173,7 +179,7 @@ Most useful files after the scheduler runs:
 ## Portfolio Strategy (Low Risk)
 
 - Capital balance: `$10,000` fixed benchmark
-- Simulation balance: updated every run from simulated trades
+- Simulation balance: mark-to-market equity updated every run from simulated trades and open-position repricing
 - Risk per trade: `0.75%` of equity
 - Max stock allocation per position: `12%`
 - Max options allocation per position: `1%`
@@ -191,8 +197,45 @@ Most useful files after the scheduler runs:
   - Increases target exposure up to the configured deploy percentage
   - Distributes available cash across actionable picks each run
   - Keeps `capital_balance` fixed while `simulation_balance` reflects full-deployment P/L
+  - Still limits new deployment by current cash and remaining exposure headroom
 
-## Run every 5 minutes in background (Windows Task Scheduler)
+## How To Read Simulation Budget
+
+- `Initial benchmark capital`: fixed reporting baseline, normally `$10,000`
+- `Run start budget`: simulation equity at the start of the current run
+- `Current equity`: cash plus marked value of open simulated positions
+- `Cash on hand`: undeployed cash available before new recommendations
+- `Current exposure`: capital currently tied up in open positions
+- `Fresh deployable budget now`: additional capital that can still be deployed after exposure caps and drawdown controls
+- `Recommended deploy (risk-capped)`: the new recommendation budget after applying both position-sizing logic and portfolio-level caps
+
+Why it can be lower than the initial budget:
+- realized losses reduce simulation equity
+- unrealized losses on open positions reduce mark-to-market equity
+- drawdown controls can tighten exposure and risk per trade until equity recovers
+
+Improvement actions when budget is under pressure:
+- reduce deployment to the risk-capped budget
+- prioritize highest-conviction stock setups
+- preserve more cash while drawdown controls are active
+- pause new positions if deployable budget is too small
+
+## Background schedulers
+
+The project includes scheduler installers for both Windows and macOS:
+- Windows: `scripts/install_task_scheduler.ps1`
+- macOS: `scripts/install_launchd.sh`
+
+Both use the platform runner script and write daily output under `data/daily/YYYYMMDD/`, with `data/today` pointing at the current day.
+
+Quick scheduler commands:
+
+| Platform | Install scheduler | Run now | Check status | Remove scheduler |
+| --- | --- | --- | --- | --- |
+| Windows | `powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1` | `Start-ScheduledTask -TaskName stock_option_agent` | `Get-ScheduledTask -TaskName stock_option_agent` | `powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_task_scheduler.ps1` |
+| macOS | `bash scripts/install_launchd.sh` | `launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"` | `launchctl list \| grep com.local.stock_option_agent` | `bash scripts/uninstall_launchd.sh` |
+
+## Windows Task Scheduler
 
 Recommended operating flow:
 
@@ -290,6 +333,61 @@ Default schedule behavior:
 - Writes logs under `data/daily/YYYYMMDD/logs/`
 - Refreshes `data/today` as a directory junction to the current `data/daily/YYYYMMDD/` partition
 - Does not auto-run after-hours or weekends unless installed with `-EnableAfterHours`
+
+## macOS launchd
+
+Recommended operating flow:
+
+1. Install the launchd agent.
+2. Start it once manually if you want an immediate first run.
+3. Verify the launchd job is loaded.
+4. Check `data/today/logs/` and `data/today/latest/` after the first run.
+5. Unload the launchd job when you need to pause background execution.
+
+Install and load the launchd job:
+
+```bash
+bash scripts/install_launchd.sh
+```
+
+Manual one-shot run through the macOS runner:
+
+```bash
+bash scripts/run_agent.sh
+```
+
+Manual one-shot run with after-hours enabled:
+
+```bash
+ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
+```
+
+Check status:
+
+```bash
+launchctl list | grep com.local.stock_option_agent
+```
+
+Run immediately:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"
+```
+
+Remove job:
+
+```bash
+bash scripts/uninstall_launchd.sh
+```
+
+Default macOS schedule behavior:
+- Runs on weekdays during the regular US market session window: `06:30` through `13:00` local time
+- The current launchd installer schedules every 30 minutes in that window
+- Intended for a macOS machine set to Pacific Time to match `09:30-16:00 ET`
+- Uses `scripts/run_agent.sh`
+- Writes per-run logs under `data/daily/YYYYMMDD/logs/`
+- Refreshes `data/today` as a symlink to the current `data/daily/YYYYMMDD/` partition
+- Does not auto-run on weekends
 
 ## Important
 

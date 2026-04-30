@@ -66,18 +66,23 @@ Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000`
   - `data/portfolio/state.json`
 
 ## Automation
-- Runner: `scripts/run_agent.ps1`
-- Install background schedule: `scripts/install_task_scheduler.ps1`
-- Inspect scheduler state: `Get-ScheduledTask -TaskName stock_option_agent`
-- Inspect last run result: `Get-ScheduledTaskInfo -TaskName stock_option_agent`
-- Start one immediate run: `Start-ScheduledTask -TaskName stock_option_agent`
-- Stop active run: `Stop-ScheduledTask -TaskName stock_option_agent`
-- Disable scheduler without deleting it: `Disable-ScheduledTask -TaskName stock_option_agent`
-- Re-enable scheduler: `Enable-ScheduledTask -TaskName stock_option_agent`
-- Remove schedule: `scripts/uninstall_task_scheduler.ps1`
+- Windows runner: `scripts/run_agent.ps1`
+- macOS runner: `scripts/run_agent.sh`
+- Install Windows background schedule: `scripts/install_task_scheduler.ps1`
+- Install macOS background schedule: `scripts/install_launchd.sh`
+- Inspect Windows scheduler state: `Get-ScheduledTask -TaskName stock_option_agent`
+- Inspect Windows last run result: `Get-ScheduledTaskInfo -TaskName stock_option_agent`
+- Inspect macOS scheduler state: `launchctl list | grep com.local.stock_option_agent`
+- Start one immediate Windows run: `Start-ScheduledTask -TaskName stock_option_agent`
+- Start one immediate macOS run: `launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"`
+- Stop active Windows run: `Stop-ScheduledTask -TaskName stock_option_agent`
+- Disable Windows scheduler without deleting it: `Disable-ScheduledTask -TaskName stock_option_agent`
+- Re-enable Windows scheduler: `Enable-ScheduledTask -TaskName stock_option_agent`
+- Remove Windows schedule: `scripts/uninstall_task_scheduler.ps1`
+- Remove macOS schedule: `scripts/uninstall_launchd.sh`
 - Default schedule: weekdays, regular US market session only (`06:30-13:00 PT` / `09:30-16:00 ET`)
 - No automatic weekend runs
-- No automatic after-hours runs unless the scheduled task is installed with `-EnableAfterHours`
+- No automatic after-hours runs unless the Windows scheduled task is installed with `-EnableAfterHours`; macOS one-shot runs can use `ENABLE_AFTER_HOURS=1`
 - First places to inspect after a scheduled run:
   - `data/today/latest/`
   - `data/today/logs/`
@@ -93,9 +98,15 @@ Track virtual portfolio growth or decline from fixed `capital_balance` `$10,000`
 - Conservative profile uses stocks-first behavior and defaults to `NO_OPTION`.
 - Unified runtime config is stored in `config/agent_config.json`.
 - `trading.real_trading_capital` is fixed capital used for quantity recommendations.
-- `trading.simulation_initial_capital` is the first-run simulation baseline; simulation then rolls each run.
+- `trading.simulation_initial_capital` is the fixed initial benchmark for simulation reporting and first-run state.
+- `simulation_balance` is live mark-to-market equity and can move below the initial benchmark after realized or unrealized losses.
 - `trading.full_budget_deploy` and `trading.full_deploy_target_pct` enable aggressive full-cash deployment.
-- Portfolio state uses fixed `capital_balance` and live `simulation_balance`.
+- Portfolio state uses fixed `capital_balance`, live `simulation_balance`, current `cash`, and open-position exposure.
+- In generated `top10.md`, the `Simulation Budget` section should be interpreted as:
+  - benchmark capital: fixed reference amount
+  - current equity: cash plus current marked value of open positions
+  - fresh deployable budget: remaining deployable capital after exposure caps and drawdown controls
+  - improvement actions: concrete recovery steps when current budget is below benchmark or exposure is too tight
 - News score stays neutral if headline coverage is below the minimum threshold.
 - The engine performs post-analysis each run on the previous top picks and updates model weights and thresholds.
 - Latest post-analysis summary is written to `data/latest/post_analysis.json` and historical records to `data/history/post_analysis_history.jsonl`.

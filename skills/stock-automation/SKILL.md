@@ -17,9 +17,13 @@ Run the analysis pipeline automatically in background during US market hours eve
   4. Publish new top-10 recommendations.
 
 ## Execution
-1. Use runner script `scripts/run_agent.ps1`.
+1. Use the platform runner script:
+   - Windows: `scripts/run_agent.ps1`
+   - macOS: `scripts/run_agent.sh`
 2. Runner must execute the analysis module and write logs per run.
-3. Prefer project virtual environment Python at `.venv\Scripts\python.exe` when available.
+3. Prefer the project virtual environment Python when available:
+   - Windows: `.venv\Scripts\python.exe`
+   - macOS: `.venv/bin/python`
 
 ## Background Runtime (Windows)
 - Install: `scripts/install_task_scheduler.ps1`
@@ -27,6 +31,14 @@ Run the analysis pipeline automatically in background during US market hours eve
 - Scheduler entry: `stock_option_agent`
 - Trigger: every 5 minutes on weekdays from `06:30` through `13:00` local time
 - Optional after-hours mode: reinstall with `-EnableAfterHours`
+
+## Background Runtime (macOS)
+- Install: `scripts/install_launchd.sh`
+- Remove: `scripts/uninstall_launchd.sh`
+- Scheduler entry: `com.local.stock_option_agent`
+- Trigger: weekdays from `06:30` through `13:00` local time
+- Current launchd cadence: every 30 minutes in the market-hours window
+- Manual one-shot after-hours mode: `ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh`
 
 ## Storage Contract
 - Daily root:

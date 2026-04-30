@@ -1799,6 +1799,26 @@ def should_close_position(position: dict[str, Any], current_price: float) -> tup
     return False, ""
 
 
+def advice_close_reason(position: dict[str, Any], advice: dict[str, Any] | None) -> str:
+    if not advice:
+        return ""
+    direction = str(position.get("direction", "LONG"))
+    instrument = str(position.get("instrument", "STOCK"))
+    if instrument == "STOCK":
+        action = str(advice.get("action_stock", "HOLD"))
+        if direction == "LONG" and action == "SELL_SHORT":
+            return "advice_sell_or_short"
+        if direction == "SHORT" and action == "BUY_STOCK":
+            return "advice_buy_to_cover"
+    elif instrument == "OPTION":
+        action = str(advice.get("action_option", "NO_OPTION"))
+        if direction == "LONG" and action == "BUY_PUT":
+            return "advice_buy_put"
+        if direction == "SHORT" and action == "BUY_CALL":
+            return "advice_buy_call"
+    return ""
+
+
 def build_budget_controls(
     current_equity: float,
     simulation_baseline: float,
@@ -2416,7 +2436,13 @@ def build_new_position(
     }
 
 
-def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_after_hours: bool) -> dict[str, Any]:
+def update_portfolio(
+    base_dir: Path,
+    top10: pd.DataFrame,
+    run_ts: str,
+    enable_after_hours: bool,
+    advice_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     state = load_portfolio_state(base_dir)
     # capital_balance is a fixed benchmark (e.g., 10000) and should not drift run-to-run.
     base_capital = INITIAL_CAPITAL
@@ -2424,6 +2450,9 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     cash = safe_float(state.get("cash"), base_capital)
     run_count = int(state.get("run_count", 0)) + 1
     open_positions: list[dict[str, Any]] = list(state.get("open_positions", []))
+    candidate_rows = top10.to_dict(orient="records")
+    advice_rows = (advice_df if advice_df is not None else top10).to_dict(orient="records")
+    advice_by_symbol = {str(r.get("symbol", "")): r for r in advice_rows if str(r.get("symbol", ""))}
 
     events: list[dict[str, Any]] = []
     still_open: list[dict[str, Any]] = []
@@ -2440,6 +2469,9 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
         value = mark_position_value(pos, current_price)
         pos["hold_runs"] = int(pos.get("hold_runs", 0)) + 1
         close_now, reason = should_close_position(pos, current_price)
+        if not close_now:
+            reason = advice_close_reason(pos, advice_by_symbol.get(symbol))
+            close_now = bool(reason)
         if close_now:
             cash += value
             pnl = value - safe_float(pos.get("capital_allocated"), 0.0)
@@ -2474,7 +2506,6 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
     max_open_positions = int(budget_controls.get("effective_max_open_positions", 20 if full_deploy else MAX_OPEN_POSITIONS))
     current_exposure_cap = equity * target_exposure_pct
 
-    candidate_rows = top10.to_dict(orient="records")
     used_symbols = {str(p.get("symbol")) for p in open_positions}
     if full_deploy:
         actionable = [
@@ -2488,6 +2519,9 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
                 break
             symbol = str(row.get("symbol", ""))
             if not symbol:
+                remaining_slots = max(0, remaining_slots - 1)
+                continue
+            if symbol in used_symbols:
                 remaining_slots = max(0, remaining_slots - 1)
                 continue
             open_value = sum(
@@ -2536,7 +2570,7 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
             stock_targets = [p for p in open_positions if str(p.get("instrument", "")) == "STOCK"]
             remaining_targets = len(stock_targets)
             for idx, pos0 in enumerate(stock_targets, start=1):
-                if cash < 100:
+                if len(open_positions) >= max_open_positions or cash < 100:
                     break
                 remaining_targets = max(1, remaining_targets)
                 open_value = sum(
@@ -2689,6 +2723,7 @@ def update_portfolio(base_dir: Path, top10: pd.DataFrame, run_ts: str, enable_af
         "run_return_pct": round(run_return * 100, 4),
         "total_return_pct": round(total_return * 100, 4),
         "cash": round(cash, 4),
+        "current_exposure": round(end_open_value, 4),
         "peak_equity": round(safe_float(state.get("peak_simulation_balance"), end_equity), 4),
         "drawdown_pct": round(safe_float(budget_controls.get("drawdown_pct"), 0.0), 4),
         "open_positions": len(open_positions),
@@ -2756,6 +2791,7 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         top10,
         ts,
         bool(market_ctx.get("enable_after_hours", False)),
+        all_df,
     )
     (run_dir / "portfolio_summary.json").write_text(json.dumps(portfolio_summary, indent=2), encoding="utf-8")
     sizing_equity = sizing_equity_from_summary(portfolio_summary)
@@ -2767,8 +2803,10 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         top10,
         safe_float(portfolio_summary.get("start_equity"), sizing_equity),
         safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), sizing_equity)),
-        safe_float(portfolio_summary.get("start_equity"), sizing_equity),
+        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
         budget_controls,
+        safe_float(portfolio_summary.get("cash"), 0.0),
+        safe_float(portfolio_summary.get("current_exposure"), 0.0),
     )
 
     md_lines = [
@@ -2791,17 +2829,24 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
         "## Simulation Budget",
-        f"- Rolling baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Initial benchmark capital (fixed): `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Change vs initial benchmark: `${budget_plan.get('delta_vs_initial', 0):,.2f}`",
+        f"- Change vs run start: `${budget_plan.get('delta_vs_run_start', 0):,.2f}`",
+        f"- Cash on hand: `${budget_plan.get('cash_on_hand', 0):,.2f}`",
+        f"- Current exposure: `${budget_plan.get('current_exposure', 0):,.2f}`",
         f"- Peak equity: `${budget_plan.get('peak_equity', 0):,.2f}`",
         f"- Drawdown from peak: `{budget_plan.get('drawdown_pct', 0):.2f}%`",
         f"- Budget regime: `{budget_plan.get('budget_regime', 'normal')}`",
         f"- Target exposure cap: `{budget_plan.get('target_exposure_pct', 0):.2f}%`",
         f"- Risk per trade: `{budget_plan.get('risk_per_trade_pct', 0):.4f}%`",
+        f"- Remaining exposure headroom: `${budget_plan.get('exposure_headroom', 0):,.2f}`",
+        f"- Fresh deployable budget now: `${budget_plan.get('deployable_budget', 0):,.2f}`",
         f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
         f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
         f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",
+        f"- Why this can be below the initial budget: {budget_plan.get('budget_explanation', '')}",
         "",
         "## Alerts",
         f"- Channel: `{alert_summary.get('channel', '')}`",
@@ -2837,6 +2882,11 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
             md_lines.append(
                 f"{idx}. {b['symbol']} | {b['action_stock']} | shares={b['stock_qty']} | contracts={b['option_contracts']} | budget=${b['budget_usd']:.2f}"
             )
+    actions = budget_plan.get("improvement_actions", [])
+    if actions:
+        md_lines.extend(["", "## Improvement Actions"])
+        for idx, action in enumerate(actions, start=1):
+            md_lines.append(f"{idx}. {action}")
     md_lines.extend(["", "## Daily Trading Section"])
     daily_focus = top10[top10["strategy_bucket"] == "DAILY_TRADING"].head(10).reset_index(drop=True)
     if daily_focus.empty:
@@ -2993,6 +3043,8 @@ def build_budget_plan(
     current_equity: float,
     simulation_baseline: float,
     budget_controls: dict[str, Any] | None = None,
+    current_cash: float | None = None,
+    current_exposure: float | None = None,
 ) -> dict[str, Any]:
     start_eq = max(0.0, safe_float(run_start_equity, INITIAL_CAPITAL))
     eq = max(0.0, safe_float(current_equity, start_eq))
@@ -3000,27 +3052,68 @@ def build_budget_plan(
     controls = budget_controls or {}
     target_exposure_pct = safe_float(controls.get("effective_target_exposure_pct"), MAX_PORTFOLIO_EXPOSURE_PCT * 100.0) / 100.0
     budget_cap = eq * target_exposure_pct
+    cash = max(0.0, safe_float(current_cash, eq))
+    exposure = max(0.0, safe_float(current_exposure, max(0.0, eq - cash)))
+    exposure_headroom = max(0.0, budget_cap - exposure)
+    deployable_budget = min(cash, exposure_headroom)
+    delta_vs_initial = eq - baseline
+    delta_vs_run_start = eq - start_eq
+    budget_status = "at_or_above_initial"
+    if delta_vs_initial < 0:
+        budget_status = "below_initial"
+    elif delta_vs_initial > 0:
+        budget_status = "above_initial"
+    explanation_parts = [
+        "Simulation balance is marked to market each run.",
+        "Closed-trade losses and unrealized losses on open positions reduce equity.",
+    ]
+    if delta_vs_initial < 0:
+        explanation_parts.append("That is why current budget can be lower than the fixed initial benchmark.")
+    if safe_float(controls.get("drawdown_pct"), 0.0) > 0:
+        explanation_parts.append("Drawdown controls also reduce fresh deployment and risk until equity recovers.")
+    budget_explanation = " ".join(explanation_parts)
+    improvement_actions: list[str] = []
+    if delta_vs_initial < 0 or str(controls.get("regime", "normal")) != "normal":
+        improvement_actions.append("Reduce new deployment to the risk-capped budget instead of the raw recommendation.")
+        improvement_actions.append("Prioritize only the highest-conviction stock setups until equity recovers.")
+    if safe_float(controls.get("drawdown_pct"), 0.0) >= 5.0:
+        improvement_actions.append("Preserve more cash and avoid using the full exposure cap while drawdown remains active.")
+    if exposure > budget_cap:
+        improvement_actions.append("Do not add new positions until existing exposure falls back under the target exposure cap.")
+    if deployable_budget < 100.0:
+        improvement_actions.append("Pause opening small new positions; wait for positions to close, improve, or for cash to rebuild.")
+    if not improvement_actions:
+        improvement_actions.append("Budget is healthy; continue normal sizing and deployment rules.")
     if top10.empty:
         return {
             "initial_baseline": baseline,
             "run_start_budget": start_eq,
             "current_equity": eq,
+            "delta_vs_initial": delta_vs_initial,
+            "delta_vs_run_start": delta_vs_run_start,
             "budget_regime": str(controls.get("regime", "normal")),
             "peak_equity": safe_float(controls.get("peak_equity"), eq),
             "drawdown_pct": safe_float(controls.get("drawdown_pct"), 0.0),
             "target_exposure_pct": round(target_exposure_pct * 100.0, 2),
             "risk_per_trade_pct": safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0),
+            "cash_on_hand": round(cash, 2),
+            "current_exposure": round(exposure, 2),
+            "exposure_headroom": round(exposure_headroom, 2),
+            "deployable_budget": round(deployable_budget, 2),
             "uncapped_recommended": 0.0,
             "capped_recommended": 0.0,
-            "reserve_after_plan": eq,
+            "reserve_after_plan": round(cash, 2),
+            "budget_status": budget_status,
+            "budget_explanation": budget_explanation,
+            "improvement_actions": improvement_actions,
             "rows": [],
         }
     work = top10.copy()
     work["recommended_budget_usd"] = pd.to_numeric(work.get("recommended_budget_usd", 0.0), errors="coerce").fillna(0.0)
     actionable = work[work["recommended_budget_usd"] > 0].copy()
     uncapped = float(actionable["recommended_budget_usd"].sum()) if not actionable.empty else 0.0
-    capped = min(uncapped, budget_cap)
-    reserve = max(0.0, eq - capped)
+    capped = min(uncapped, deployable_budget)
+    reserve = max(0.0, cash - capped)
     rows = []
     if not actionable.empty:
         for _, r in actionable.head(10).iterrows():
@@ -3037,14 +3130,23 @@ def build_budget_plan(
         "initial_baseline": round(baseline, 2),
         "run_start_budget": round(start_eq, 2),
         "current_equity": round(eq, 2),
+        "delta_vs_initial": round(delta_vs_initial, 2),
+        "delta_vs_run_start": round(delta_vs_run_start, 2),
         "budget_regime": str(controls.get("regime", "normal")),
         "peak_equity": round(safe_float(controls.get("peak_equity"), eq), 2),
         "drawdown_pct": round(safe_float(controls.get("drawdown_pct"), 0.0), 2),
         "target_exposure_pct": round(target_exposure_pct * 100.0, 2),
         "risk_per_trade_pct": round(safe_float(controls.get("effective_risk_per_trade_pct"), RISK_PER_TRADE * 100.0), 4),
+        "cash_on_hand": round(cash, 2),
+        "current_exposure": round(exposure, 2),
+        "exposure_headroom": round(exposure_headroom, 2),
+        "deployable_budget": round(deployable_budget, 2),
         "uncapped_recommended": round(uncapped, 2),
         "capped_recommended": round(capped, 2),
         "reserve_after_plan": round(reserve, 2),
+        "budget_status": budget_status,
+        "budget_explanation": budget_explanation,
+        "improvement_actions": improvement_actions,
         "rows": rows,
     }
 
@@ -3344,7 +3446,15 @@ def save_symbol_summary(
         budget_controls = build_budget_controls(sim_equity, INITIAL_CAPITAL, peak_equity, full_deploy, deploy_target_pct)
         df = add_sizing_columns(df, sim_equity, budget_controls)
         df = add_instruction_columns(df)
-        single_budget = build_budget_plan(df, sim_equity, sim_equity, sim_equity, budget_controls)
+        single_budget = build_budget_plan(
+            df,
+            sim_equity,
+            sim_equity,
+            INITIAL_CAPITAL,
+            budget_controls,
+            safe_float(sim_state.get("cash"), sim_equity),
+            max(0.0, sim_equity - safe_float(sim_state.get("cash"), sim_equity)),
+        )
         rec = df.iloc[0]
         lines.extend(
             [
@@ -3363,17 +3473,23 @@ def save_symbol_summary(
                 f"- Risk/Reward: `{rec['risk_reward']:.2f}`",
                 "",
                 "## Simulation Budget",
-                f"- Rolling baseline: `${single_budget.get('initial_baseline', 0):,.2f}`",
+                f"- Initial benchmark capital (fixed): `${single_budget.get('initial_baseline', 0):,.2f}`",
                 f"- Run start budget: `${single_budget.get('run_start_budget', 0):,.2f}`",
                 f"- Current equity: `${single_budget.get('current_equity', 0):,.2f}`",
+                f"- Change vs initial benchmark: `${single_budget.get('delta_vs_initial', 0):,.2f}`",
+                f"- Change vs run start: `${single_budget.get('delta_vs_run_start', 0):,.2f}`",
                 f"- Peak equity: `${single_budget.get('peak_equity', 0):,.2f}`",
                 f"- Drawdown from peak: `{single_budget.get('drawdown_pct', 0):.2f}%`",
                 f"- Budget regime: `{single_budget.get('budget_regime', 'normal')}`",
                 f"- Target exposure cap: `{single_budget.get('target_exposure_pct', 0):.2f}%`",
                 f"- Risk per trade: `{single_budget.get('risk_per_trade_pct', 0):.4f}%`",
                 f"- Real trading capital (fixed): `${REAL_TRADING_CAPITAL:,.2f}`",
+                f"- Cash on hand: `${single_budget.get('cash_on_hand', 0):,.2f}`",
+                f"- Current exposure: `${single_budget.get('current_exposure', 0):,.2f}`",
+                f"- Fresh deployable budget now: `${single_budget.get('deployable_budget', 0):,.2f}`",
                 f"- This pick budget: `${safe_float(rec.get('recommended_budget_usd'), 0.0):,.2f}`",
                 f"- Reserve after this pick (risk-capped): `${single_budget.get('reserve_after_plan', 0):,.2f}`",
+                f"- Why this can be below the initial budget: {single_budget.get('budget_explanation', '')}",
                 "",
                 "## Scores",
                 f"- Fundamental: `{rec['fundamental_score']:.4f}`",
@@ -3542,8 +3658,10 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         stale_top10,
         safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
         safe_float(portfolio_summary.get("simulation_balance"), safe_float(portfolio_summary.get("end_equity"), INITIAL_CAPITAL)),
-        safe_float(portfolio_summary.get("start_equity"), INITIAL_CAPITAL),
+        safe_float(portfolio_summary.get("capital_balance"), safe_float(portfolio_summary.get("initial_capital"), INITIAL_CAPITAL)),
         budget_controls,
+        safe_float(portfolio_summary.get("cash"), 0.0),
+        safe_float(portfolio_summary.get("current_exposure"), 0.0),
     )
 
     latest_candidates = base_dir / "latest" / "candidates.csv"
@@ -3571,17 +3689,24 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         f"- Open positions: `{portfolio_summary.get('open_positions', 0)}`",
         "",
         "## Simulation Budget",
-        f"- Rolling baseline: `${budget_plan.get('initial_baseline', 0):,.2f}`",
+        f"- Initial benchmark capital (fixed): `${budget_plan.get('initial_baseline', 0):,.2f}`",
         f"- Run start budget (from previous run): `${budget_plan.get('run_start_budget', 0):,.2f}`",
         f"- Current equity: `${budget_plan.get('current_equity', 0):,.2f}`",
+        f"- Change vs initial benchmark: `${budget_plan.get('delta_vs_initial', 0):,.2f}`",
+        f"- Change vs run start: `${budget_plan.get('delta_vs_run_start', 0):,.2f}`",
+        f"- Cash on hand: `${budget_plan.get('cash_on_hand', 0):,.2f}`",
+        f"- Current exposure: `${budget_plan.get('current_exposure', 0):,.2f}`",
         f"- Peak equity: `${budget_plan.get('peak_equity', 0):,.2f}`",
         f"- Drawdown from peak: `{budget_plan.get('drawdown_pct', 0):.2f}%`",
         f"- Budget regime: `{budget_plan.get('budget_regime', 'normal')}`",
         f"- Target exposure cap: `{budget_plan.get('target_exposure_pct', 0):.2f}%`",
         f"- Risk per trade: `{budget_plan.get('risk_per_trade_pct', 0):.4f}%`",
+        f"- Remaining exposure headroom: `${budget_plan.get('exposure_headroom', 0):,.2f}`",
+        f"- Fresh deployable budget now: `${budget_plan.get('deployable_budget', 0):,.2f}`",
         f"- Recommended deploy (raw): `${budget_plan.get('uncapped_recommended', 0):,.2f}`",
         f"- Recommended deploy (risk-capped): `${budget_plan.get('capped_recommended', 0):,.2f}`",
         f"- Reserve cash after plan: `${budget_plan.get('reserve_after_plan', 0):,.2f}`",
+        f"- Why this can be below the initial budget: {budget_plan.get('budget_explanation', '')}",
         "",
         "## Alerts",
         f"- Channel: `{alert_summary.get('channel', '')}`",
@@ -3610,6 +3735,11 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
                 note.append(
                     f"{idx}. {b['symbol']} | {b['action_stock']} | shares={b['stock_qty']} | contracts={b['option_contracts']} | budget=${b['budget_usd']:.2f}"
                 )
+    actions = budget_plan.get("improvement_actions", [])
+    if actions:
+        note.extend(["", "## Improvement Actions"])
+        for idx, action in enumerate(actions, start=1):
+            note.append(f"{idx}. {action}")
     (run_dir / "top10.md").write_text("\n".join(note), encoding="utf-8")
     if latest_md and latest_md.exists():
         shutil.copy2(latest_md, base_dir / "latest" / "top10_prev.md")
