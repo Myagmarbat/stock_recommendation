@@ -31,6 +31,7 @@ if (-not $AgentConfigPath) {
 
 $runnerArgs = @(
     "-NoProfile"
+    "-WindowStyle", "Hidden"
     "-ExecutionPolicy", "Bypass"
     "-File", ('"{0}"' -f $runnerPath)
     "-PythonBin", ('"{0}"' -f $PythonBin)
@@ -47,21 +48,20 @@ $taskUser = [System.Security.SecurityElement]::Escape(
     [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 )
 $taskDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
-$startBoundary = (Get-Date -Hour 6 -Minute 30 -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")
 
-$taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Date>$taskDate</Date>
-    <Author>$taskUser</Author>
-    <Description>Runs the stock/options scanner every 5 minutes during regular market hours.</Description>
-  </RegistrationInfo>
-  <Triggers>
+function New-WeekdayTriggerXml {
+    param(
+        [int]$Hour,
+        [int]$Minute,
+        [string]$Duration
+    )
+
+    $startBoundary = (Get-Date -Hour $Hour -Minute $Minute -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")
+    return @"
     <CalendarTrigger>
       <Repetition>
         <Interval>PT5M</Interval>
-        <Duration>PT6H30M</Duration>
+        <Duration>$Duration</Duration>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
       <StartBoundary>$startBoundary</StartBoundary>
@@ -77,6 +77,53 @@ $taskXml = @"
         <WeeksInterval>1</WeeksInterval>
       </ScheduleByWeek>
     </CalendarTrigger>
+"@
+}
+
+function New-WeekdayOneShotTriggerXml {
+    param(
+        [int]$Hour,
+        [int]$Minute
+    )
+
+    $startBoundary = (Get-Date -Hour $Hour -Minute $Minute -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")
+    return @"
+    <CalendarTrigger>
+      <StartBoundary>$startBoundary</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Monday />
+          <Tuesday />
+          <Wednesday />
+          <Thursday />
+          <Friday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+"@
+}
+
+$triggerBlocks = @(
+    (New-WeekdayTriggerXml -Hour 6 -Minute 30 -Duration "PT30M")
+)
+foreach ($hour in 7..12) {
+    $triggerBlocks += New-WeekdayTriggerXml -Hour $hour -Minute 0 -Duration "PT1H"
+}
+$triggerBlocks += New-WeekdayOneShotTriggerXml -Hour 13 -Minute 5
+$taskTriggers = $triggerBlocks -join "`n"
+
+$taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>$taskDate</Date>
+    <Author>$taskUser</Author>
+    <Description>Runs the stock/options scanner every 5 minutes during regular market hours.</Description>
+  </RegistrationInfo>
+  <Triggers>
+$taskTriggers
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -226,5 +273,5 @@ try {
 }
 
 Write-Host "Installed scheduled task: $TaskName"
-Write-Host "Runs every 5 minutes from 6:30 AM to 1:00 PM local time."
+Write-Host "Runs every 5 minutes from 6:30 AM to 1:00 PM local time, then runs one daily evaluation at 1:05 PM."
 Write-Host "Overlapping triggers are ignored while a previous run is active, so the task should not remain queued."

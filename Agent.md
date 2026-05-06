@@ -46,6 +46,7 @@ Track paper portfolio growth or decline from fixed `capital_balance` `$10,000` w
   - `data/daily/YYYYMMDD/latest/alerts.json`
   - `data/daily/YYYYMMDD/latest/last_alert.txt`
   - `data/daily/YYYYMMDD/latest/daily_summary.md`
+  - `data/daily/YYYYMMDD/latest/daily_evaluation_report.md`
 - Historical files:
   - `data/daily/YYYYMMDD/history/top10_history.csv`
   - `data/daily/YYYYMMDD/history/top10_hourly.csv`
@@ -55,6 +56,7 @@ Track paper portfolio growth or decline from fixed `capital_balance` `$10,000` w
   - `data/daily/YYYYMMDD/history/trades_log.csv`
   - `data/daily/YYYYMMDD/history/symbol_summary_<SYMBOL>_history.csv`
   - `data/daily/YYYYMMDD/history/daily_summary_YYYYMMDD.md`
+  - `data/daily/YYYYMMDD/history/daily_evaluation_report_YYYYMMDD.md`
   - `data/daily/YYYYMMDD/history/daily_summary_state.json`
 - Model state:
   - `data/daily/YYYYMMDD/model/model_params.json`
@@ -113,7 +115,7 @@ Track paper portfolio growth or decline from fixed `capital_balance` `$10,000` w
 - News score stays neutral if headline coverage is below the minimum threshold.
 - The engine performs post-analysis each run on the previous top picks and updates model weights and thresholds.
 - Latest post-analysis summary is written to `data/latest/post_analysis.json` and historical records to `data/history/post_analysis_history.jsonl`.
-- End-of-day summary contract: once per trading day after `16:00 ET`, generate a day-level report with run count, P/L, win-rate snapshot, and next-day improvements.
+- End-of-day evaluation contract: once per trading day from the `13:05 PT` evaluation-only scheduled run, generate a daily evaluation report listing every recommended trade from each 5-minute run, estimated P/L, paper-trade P/L events, overall paper budget balance, and next-day improvements.
 - Market-hours context is included each run through `market_open`, `market_session`, `next_open_et`, and `next_close_et`.
 - When the market is closed, analysis and post-analysis use regular-session close price as the reference.
 - After-hours processing is disabled by default and can be enabled with `--enable-after-hours` or by installing the Windows scheduled task with `-EnableAfterHours`.

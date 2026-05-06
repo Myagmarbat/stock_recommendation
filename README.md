@@ -13,7 +13,7 @@ Automated scanner that:
 - Tracks US market session status and next open/close times.
 - Uses regular-session close pricing as the reference when the market is closed.
 - Tracks paper-trading performance from fixed `capital_balance` `$10,000` while carrying the current `paper_balance` into the next run.
-- Generates one end-of-day strategy summary per weekday after 4:00 PM ET with next-day improvement actions.
+- Generates a post-close daily evaluation report with every recommended trade from each 5-minute run, P/L, paper budget balance, and next-day improvements.
 - Uses conservative filtering by default and prefers stocks-first behavior with `NO_OPTION`.
 
 ## Setup
@@ -201,7 +201,9 @@ ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
   - `data/simple/` -> simplified outputs
 - Daily summary outputs:
   - `data/today/latest/daily_summary.md`
+  - `data/today/latest/daily_evaluation_report.md`
   - `data/today/history/daily_summary_YYYYMMDD.md`
+  - `data/today/history/daily_evaluation_report_YYYYMMDD.md`
   - `data/today/history/daily_summary_state.json`
 
 ## Where To Look After A Run
@@ -315,7 +317,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1
 Manual one-shot run through the Windows runner:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -Force
 ```
 
 Enable after-hours in the scheduled runner:
@@ -382,17 +384,19 @@ Common scheduler actions:
 
 Troubleshooting:
 - If the task exists but no fresh output appears, check `data\today\logs\` first.
-- If `Get-ScheduledTaskInfo` shows failures, run `powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1` manually to reproduce the issue in the foreground.
+- If `Get-ScheduledTaskInfo` shows failures, run `powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -Force` manually to reproduce the issue in the foreground.
 - If Python or dependencies changed, reinstall the task after confirming `.venv` is valid.
 - If you want after-hours scheduling behavior, reinstall with `-EnableAfterHours`.
 
 Default schedule behavior:
 - Runs every 5 minutes from `6:30 AM` through `1:00 PM` local time
+- Runs one evaluation-only pass at `1:05 PM` local time to assess every recommendation from the day's 5-minute runs, write P/L, paper balance, and next-day improvements
 - Uses weekdays only (`MON-FRI`)
 - Intended for a Windows machine set to Pacific Time to match `09:30-16:00 ET`
 - Uses `scripts/run_agent.ps1`
 - Writes logs under `data/daily/YYYYMMDD/logs/`
 - Refreshes `data/today` as a directory junction to the current `data/daily/YYYYMMDD/` partition
+- The runner exits without analysis outside weekday `06:30 <= time < 13:00 PT`, except the `13:00 <= time < 13:15 PT` final evaluation-only window
 - Does not auto-run after-hours or weekends unless installed with `-EnableAfterHours`
 
 ## macOS launchd

@@ -298,6 +298,18 @@ class AnalysisRow:
     option_symbol_hint: str
     option_expiry: str
     option_strike: float
+    prediction_1w_price: float
+    prediction_1w_return_pct: float
+    prediction_1m_price: float
+    prediction_1m_return_pct: float
+    prediction_3m_price: float
+    prediction_3m_return_pct: float
+    prediction_6m_price: float
+    prediction_6m_return_pct: float
+    prediction_1y_price: float
+    prediction_1y_return_pct: float
+    prediction_5y_price: float
+    prediction_5y_return_pct: float
     reason: str
 
 
@@ -1426,6 +1438,85 @@ def trade_levels(hist: pd.DataFrame, price: float, action_stock: str) -> tuple[f
     return round(entry, 4), round(target, 4), round(stop, 4), round(rr, 3)
 
 
+PREDICTION_HORIZONS: tuple[tuple[str, int], ...] = (
+    ("1w", 5),
+    ("1m", 21),
+    ("3m", 63),
+    ("6m", 126),
+    ("1y", 252),
+    ("5y", 1260),
+)
+
+
+def annualized_return(close: pd.Series, trading_days: int) -> float | None:
+    clean = close.dropna()
+    if len(clean) <= max(2, trading_days // 3):
+        return None
+    lookback = min(trading_days, len(clean) - 1)
+    start = safe_float(clean.iloc[-lookback - 1], 0.0)
+    end = safe_float(clean.iloc[-1], 0.0)
+    if start <= 0 or end <= 0:
+        return None
+    period_return = (end / start) - 1.0
+    annualized = (1.0 + period_return) ** (252.0 / lookback) - 1.0
+    return clamp(annualized, -0.75, 1.25)
+
+
+def forecast_price_horizons(
+    hist: pd.DataFrame,
+    price: float,
+    fund: float,
+    tech: float,
+    news: float,
+    total: float,
+    regime: str,
+) -> dict[str, float]:
+    empty = {}
+    for label, _days in PREDICTION_HORIZONS:
+        empty[f"prediction_{label}_price"] = 0.0
+        empty[f"prediction_{label}_return_pct"] = 0.0
+    if price <= 0 or hist.empty or "Close" not in hist.columns:
+        return empty
+
+    close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+    if len(close) < 20:
+        return empty
+
+    weighted_components: list[tuple[float, float]] = []
+    for days, weight in ((21, 0.20), (63, 0.20), (126, 0.20), (252, 0.25), (1260, 0.15)):
+        annual = annualized_return(close, days)
+        if annual is not None:
+            weighted_components.append((annual, weight))
+
+    if weighted_components:
+        weight_sum = sum(w for _v, w in weighted_components)
+        historical_annual = sum(v * w for v, w in weighted_components) / max(weight_sum, 0.01)
+    else:
+        historical_annual = 0.0
+
+    daily_vol = safe_float(close.pct_change().rolling(63).std().iloc[-1], 0.0)
+    vol_penalty = clamp(daily_vol * (252.0 ** 0.5) * 0.15, 0.0, 0.18)
+    score_tilt = 0.10 * fund + 0.12 * tech + 0.06 * news + 0.08 * total
+    regime_tilt = 0.04 if regime == "bullish" else -0.04 if regime == "bearish" else 0.0
+    expected_annual = clamp(historical_annual + score_tilt + regime_tilt - vol_penalty, -0.55, 0.75)
+    long_term_anchor = clamp(historical_annual * 0.45 + score_tilt * 0.50 + regime_tilt, -0.20, 0.35)
+
+    out: dict[str, float] = {}
+    for label, days in PREDICTION_HORIZONS:
+        years = days / 252.0
+        if days <= 63:
+            horizon_annual = expected_annual
+        elif days <= 252:
+            horizon_annual = expected_annual * 0.70 + long_term_anchor * 0.30
+        else:
+            horizon_annual = expected_annual * 0.35 + long_term_anchor * 0.65
+        predicted = price * ((1.0 + max(horizon_annual, -0.95)) ** years)
+        return_pct = ((predicted / price) - 1.0) * 100.0
+        out[f"prediction_{label}_price"] = round(predicted, 4)
+        out[f"prediction_{label}_return_pct"] = round(return_pct, 2)
+    return out
+
+
 def latest_trade_price(ticker: yf.Ticker, daily_hist: pd.DataFrame, enable_after_hours: bool, market_open: bool) -> float:
     # When market is closed, anchor to regular close.
     if not market_open:
@@ -1508,6 +1599,7 @@ def analyze_symbol(
         entry_price, target_price, stop_price, rr = trade_levels(hist, price, stock_action)
         option_symbol, option_expiry, option_strike = pick_option_candidate(ticker, option_action, price)
         execution_timing = "NOW" if market_open else "NEXT_MARKET_OPEN"
+        predictions = forecast_price_horizons(hist, price, fund, tech, news, total, regime)
 
         reason = " | ".join(
             [
@@ -1540,6 +1632,18 @@ def analyze_symbol(
             option_symbol_hint=option_symbol,
             option_expiry=option_expiry,
             option_strike=round(option_strike, 4),
+            prediction_1w_price=predictions["prediction_1w_price"],
+            prediction_1w_return_pct=predictions["prediction_1w_return_pct"],
+            prediction_1m_price=predictions["prediction_1m_price"],
+            prediction_1m_return_pct=predictions["prediction_1m_return_pct"],
+            prediction_3m_price=predictions["prediction_3m_price"],
+            prediction_3m_return_pct=predictions["prediction_3m_return_pct"],
+            prediction_6m_price=predictions["prediction_6m_price"],
+            prediction_6m_return_pct=predictions["prediction_6m_return_pct"],
+            prediction_1y_price=predictions["prediction_1y_price"],
+            prediction_1y_return_pct=predictions["prediction_1y_return_pct"],
+            prediction_5y_price=predictions["prediction_5y_price"],
+            prediction_5y_return_pct=predictions["prediction_5y_return_pct"],
             reason=reason,
         )
     except Exception:
@@ -2021,8 +2125,9 @@ def append_trade_events(base_dir: Path, events: list[dict[str, Any]]) -> None:
 
 
 def should_generate_daily_summary(now_et: datetime) -> bool:
-    # Generate after market close window (16:00 ET onward) on weekdays.
-    return now_et.weekday() < 5 and now_et.hour >= 16
+    # Generate after the regular scheduled scan window has ended.
+    now_pt = now_et.astimezone(PACIFIC_TZ)
+    return now_pt.weekday() < 5 and now_pt.hour >= 13
 
 
 def load_daily_summary_state(base_dir: Path) -> dict[str, Any]:
@@ -2068,10 +2173,10 @@ def format_iso_utc_to_pt(ts_utc: str) -> str:
         return ts_utc
 
 
-def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
+def generate_daily_summary(base_dir: Path, run_ts: str, force: bool = False) -> None:
     now_et = now_utc().astimezone(US_MARKET_TZ)
     now_pt = now_utc().astimezone(PACIFIC_TZ)
-    if not should_generate_daily_summary(now_et):
+    if not force and not should_generate_daily_summary(now_et):
         return
     today_pt = now_pt.strftime("%Y-%m-%d")
     state = load_daily_summary_state(base_dir)
@@ -2221,6 +2326,217 @@ def generate_daily_summary(base_dir: Path, run_ts: str) -> None:
     state["last_date_et"] = today_pt
     state["last_generated_run_ts"] = run_ts
     save_daily_summary_state(base_dir, state)
+
+
+def build_daily_evaluation_report(base_dir: Path, run_ts: str) -> Path:
+    now_pt = now_utc().astimezone(PACIFIC_TZ)
+    today_pt = now_pt.strftime("%Y-%m-%d")
+    latest_dir = base_dir / "latest"
+    history_dir = base_dir / "history"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    history_dir.mkdir(parents=True, exist_ok=True)
+
+    top_path = history_dir / "top10_history.csv"
+    eq_path = history_dir / "equity_curve.csv"
+    trades_path = history_dir / "trades_log.csv"
+    report_path = latest_dir / "daily_evaluation_report.md"
+
+    if not top_path.exists():
+        lines = [
+            f"# Daily Trade Evaluation ({today_pt} PT)",
+            "",
+            "No recommendation history was found for today.",
+        ]
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return report_path
+
+    try:
+        recs = pd.read_csv(top_path)
+    except Exception:
+        recs = pd.DataFrame()
+    if recs.empty or "timestamp_utc" not in recs.columns:
+        lines = [
+            f"# Daily Trade Evaluation ({today_pt} PT)",
+            "",
+            "Recommendation history was empty or unreadable.",
+        ]
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return report_path
+
+    recs["date_pt"] = recs["timestamp_utc"].astype(str).map(to_pt_date_str)
+    day_recs = recs[recs["date_pt"] == today_pt].copy()
+    if day_recs.empty:
+        lines = [
+            f"# Daily Trade Evaluation ({today_pt} PT)",
+            "",
+            "No recommendations were recorded for today.",
+        ]
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return report_path
+
+    day_recs["time_pt"] = day_recs["timestamp_utc"].astype(str).map(format_run_ts_pt)
+    for col in ("price", "entry_price", "total_score", "stock_qty", "rank"):
+        if col in day_recs.columns:
+            day_recs[col] = pd.to_numeric(day_recs[col], errors="coerce").fillna(0)
+    latest_prices = (
+        day_recs.sort_values("timestamp_utc")
+        .groupby("symbol")["price"]
+        .last()
+        .to_dict()
+        if "symbol" in day_recs.columns and "price" in day_recs.columns
+        else {}
+    )
+
+    day_recs["end_price_for_day"] = day_recs["symbol"].map(latest_prices).fillna(day_recs.get("price", 0))
+
+    def recommendation_pnl(row: pd.Series) -> float:
+        action = str(row.get("action_stock", ""))
+        qty = int(safe_float(row.get("stock_qty"), 0.0))
+        entry = safe_float(row.get("entry_price"), safe_float(row.get("price"), 0.0))
+        end_price = safe_float(row.get("end_price_for_day"), entry)
+        if qty <= 0 or entry <= 0:
+            return 0.0
+        if action == "SELL_SHORT":
+            return (entry - end_price) * qty
+        if action == "BUY_STOCK":
+            return (end_price - entry) * qty
+        return 0.0
+
+    day_recs["estimated_day_pnl"] = day_recs.apply(recommendation_pnl, axis=1)
+
+    trade_summary: dict[tuple[str, str], dict[str, float | str]] = {}
+    realized_pnl = 0.0
+    opens_count = 0
+    closes_count = 0
+    if trades_path.exists():
+        try:
+            trades = pd.read_csv(trades_path)
+            if not trades.empty and "timestamp_utc" in trades.columns:
+                trades["date_pt"] = trades["timestamp_utc"].astype(str).map(to_pt_date_str)
+                day_trades = trades[trades["date_pt"] == today_pt].copy()
+                for _idx, trade in day_trades.iterrows():
+                    event = str(trade.get("event", ""))
+                    symbol = str(trade.get("symbol", ""))
+                    ts = str(trade.get("timestamp_utc", ""))
+                    key = (ts, symbol)
+                    item = trade_summary.setdefault(
+                        key,
+                        {"events": "", "allocated": 0.0, "value": 0.0, "pnl": 0.0},
+                    )
+                    item["events"] = ",".join([p for p in [str(item.get("events", "")), event] if p])
+                    item["allocated"] = safe_float(item.get("allocated"), 0.0) + safe_float(trade.get("capital_allocated"), 0.0)
+                    item["value"] = safe_float(item.get("value"), 0.0) + safe_float(trade.get("value"), 0.0)
+                    item["pnl"] = safe_float(item.get("pnl"), 0.0) + safe_float(trade.get("pnl"), 0.0)
+                    if event == "OPEN":
+                        opens_count += 1
+                    if event == "CLOSE":
+                        closes_count += 1
+                        realized_pnl += safe_float(trade.get("pnl"), 0.0)
+        except Exception:
+            pass
+
+    start_equity = 0.0
+    end_equity = 0.0
+    cash = 0.0
+    open_positions = 0
+    day_pnl = 0.0
+    if eq_path.exists():
+        try:
+            eq = pd.read_csv(eq_path)
+            if not eq.empty and "timestamp_utc" in eq.columns:
+                eq["date_pt"] = eq["timestamp_utc"].astype(str).map(to_pt_date_str)
+                day_eq = eq[eq["date_pt"] == today_pt].copy()
+                if not day_eq.empty:
+                    start_equity = safe_float(day_eq.iloc[0].get("start_equity"), 0.0)
+                    end_equity = safe_float(day_eq.iloc[-1].get("end_equity"), 0.0)
+                    cash = safe_float(day_eq.iloc[-1].get("cash"), 0.0)
+                    open_positions = int(safe_float(day_eq.iloc[-1].get("open_positions"), 0.0))
+                    day_pnl = end_equity - start_equity
+        except Exception:
+            pass
+
+    daily_summary_path = latest_dir / "daily_summary.md"
+    improvements: list[str] = []
+    if daily_summary_path.exists():
+        capture = False
+        for line in daily_summary_path.read_text(encoding="utf-8").splitlines():
+            if line.strip() == "## Improvements":
+                capture = True
+                continue
+            if capture and line.startswith("## "):
+                break
+            if capture and line.strip():
+                improvements.append(line)
+
+    actionable = day_recs[day_recs.get("action_stock", "") != "HOLD"] if "action_stock" in day_recs.columns else day_recs
+    estimated_total = float(pd.to_numeric(actionable.get("estimated_day_pnl", 0), errors="coerce").fillna(0).sum())
+    runs_count = int(day_recs["timestamp_utc"].nunique())
+
+    lines = [
+        f"# Daily Trade Evaluation ({today_pt} PT)",
+        "",
+        "## Paper Budget",
+        f"- Start paper balance: `${start_equity:,.2f}`",
+        f"- End paper balance: `${end_equity:,.2f}`",
+        f"- Daily paper P/L: `${day_pnl:,.2f}`",
+        f"- Cash: `${cash:,.2f}`",
+        f"- Open positions after evaluation: `{open_positions}`",
+        f"- Realized paper-trade P/L today: `${realized_pnl:,.2f}`",
+        "",
+        "## Recommendation Coverage",
+        f"- Five-minute recommendation runs reviewed: `{runs_count}`",
+        f"- Recommended rows reviewed: `{len(day_recs)}`",
+        f"- Paper opens today: `{opens_count}`",
+        f"- Paper closes today: `{closes_count}`",
+        f"- Estimated mark-to-last-seen P/L across actionable recommendations: `${estimated_total:,.2f}`",
+        "",
+        "## Improvements Applied For Tomorrow",
+    ]
+    if improvements:
+        lines.extend(improvements)
+    else:
+        lines.append("1. No daily improvement actions were generated because the daily summary had insufficient data.")
+
+    lines.extend(
+        [
+            "",
+            "## All Recommended Trades",
+            "| Time PT | Rank | Symbol | Action | Qty | Entry | Last Seen | Est. P/L | Score | Paper Event | Paper P/L |",
+            "|---|---:|---|---|---:|---:|---:|---:|---:|---|---:|",
+        ]
+    )
+
+    display_cols = [
+        "timestamp_utc",
+        "time_pt",
+        "rank",
+        "symbol",
+        "action_stock",
+        "stock_qty",
+        "entry_price",
+        "end_price_for_day",
+        "estimated_day_pnl",
+        "total_score",
+    ]
+    for _idx, row in day_recs.sort_values(["timestamp_utc", "rank"]).iterrows():
+        key = (str(row.get("timestamp_utc", "")), str(row.get("symbol", "")))
+        trade = trade_summary.get(key, {})
+        paper_event = str(trade.get("events", ""))
+        paper_pnl = safe_float(trade.get("pnl"), 0.0)
+        values = {col: row.get(col, "") for col in display_cols}
+        lines.append(
+            f"| {values['time_pt']} | {int(safe_float(values['rank'], 0))} | {values['symbol']} | "
+            f"{values['action_stock']} | {int(safe_float(values['stock_qty'], 0))} | "
+            f"${safe_float(values['entry_price'], 0):,.2f} | ${safe_float(values['end_price_for_day'], 0):,.2f} | "
+            f"${safe_float(values['estimated_day_pnl'], 0):,.2f} | {safe_float(values['total_score'], 0):.3f} | "
+            f"{paper_event or '-'} | ${paper_pnl:,.2f} |"
+        )
+
+    report_text = "\n".join(lines)
+    report_path.write_text(report_text, encoding="utf-8")
+    hist_path = history_dir / f"daily_evaluation_report_{today_pt.replace('-', '')}.md"
+    hist_path.write_text(report_text, encoding="utf-8")
+    return report_path
 
 
 def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positions: list[dict[str, Any]], enable_after_hours: bool) -> None:
@@ -3432,7 +3748,7 @@ def analyze_single_symbol(
 ) -> tuple[AnalysisRow | None, dict[str, Any]]:
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
+        hist = ticker.history(period="5y", interval="1d", auto_adjust=False)
         if hist.empty:
             return None, {"status": "no_history"}
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
@@ -3472,6 +3788,7 @@ def analyze_single_symbol(
         entry_price, target_price, stop_price, rr = trade_levels(hist, price, stock_action)
         option_symbol, option_expiry, option_strike = pick_option_candidate(ticker, option_action, price)
         execution_timing = "NOW" if market_open else "NEXT_MARKET_OPEN"
+        predictions = forecast_price_horizons(hist, price, fund, tech, news, total, regime)
         reason = " | ".join(
             [
                 gate_reason,
@@ -3506,6 +3823,18 @@ def analyze_single_symbol(
             option_symbol_hint=option_symbol,
             option_expiry=option_expiry,
             option_strike=round(option_strike, 4),
+            prediction_1w_price=predictions["prediction_1w_price"],
+            prediction_1w_return_pct=predictions["prediction_1w_return_pct"],
+            prediction_1m_price=predictions["prediction_1m_price"],
+            prediction_1m_return_pct=predictions["prediction_1m_return_pct"],
+            prediction_3m_price=predictions["prediction_3m_price"],
+            prediction_3m_return_pct=predictions["prediction_3m_return_pct"],
+            prediction_6m_price=predictions["prediction_6m_price"],
+            prediction_6m_return_pct=predictions["prediction_6m_return_pct"],
+            prediction_1y_price=predictions["prediction_1y_price"],
+            prediction_1y_return_pct=predictions["prediction_1y_return_pct"],
+            prediction_5y_price=predictions["prediction_5y_price"],
+            prediction_5y_return_pct=predictions["prediction_5y_return_pct"],
             reason=reason,
         )
         status = "ok" if gate_ok else "filtered_by_conservative_gate"
@@ -3575,6 +3904,16 @@ def save_symbol_summary(
                 f"- Option instruction: `{rec['option_instruction']}`",
                 f"- Entry/Target/Stop: `{rec['entry_price']:.2f} / {rec['target_price']:.2f} / {rec['stop_price']:.2f}`",
                 f"- Risk/Reward: `{rec['risk_reward']:.2f}`",
+                "",
+                "## Price Predictions",
+                "| Horizon | Predicted Price | Return |",
+                "|---|---:|---:|",
+                f"| 1 week | `${safe_float(rec.get('prediction_1w_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_1w_return_pct'), 0.0):.2f}%` |",
+                f"| 1 month | `${safe_float(rec.get('prediction_1m_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_1m_return_pct'), 0.0):.2f}%` |",
+                f"| 3 months | `${safe_float(rec.get('prediction_3m_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_3m_return_pct'), 0.0):.2f}%` |",
+                f"| 6 months | `${safe_float(rec.get('prediction_6m_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_6m_return_pct'), 0.0):.2f}%` |",
+                f"| 1 year | `${safe_float(rec.get('prediction_1y_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_1y_return_pct'), 0.0):.2f}%` |",
+                f"| 5 years | `${safe_float(rec.get('prediction_5y_price'), 0.0):.2f}` | `{safe_float(rec.get('prediction_5y_return_pct'), 0.0):.2f}%` |",
                 "",
                 "## Paper Budget",
                 f"- Initial benchmark capital (fixed): `${single_budget.get('initial_baseline', 0):,.2f}`",
@@ -3884,6 +4223,39 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
     return run_dir
 
 
+def run_daily_evaluation_only(base_dir: Path) -> Path:
+    ts = now_utc().strftime("%Y%m%d_%H%M%S")
+    run_dir = base_dir / "runs" / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+
+    generate_daily_summary(base_dir, ts, force=True)
+    report_path = build_daily_evaluation_report(base_dir, ts)
+    mkt = market_hours_context()
+    status = {
+        "timestamp_utc": ts,
+        "status": "daily_evaluation_only",
+        "market_open": mkt.get("market_open"),
+        "market_session": mkt.get("market_session"),
+        "daily_summary": str(latest_dir / "daily_summary.md"),
+        "daily_evaluation_report": str(report_path),
+    }
+    market_context = {
+        "regime": "daily_evaluation_only",
+        "market_open": mkt.get("market_open"),
+        "market_session": mkt.get("market_session"),
+        "price_reference_mode": "last_regular_close",
+        "price_reference_close_date_pt": previous_trading_day_pt(),
+        "next_open_et": mkt.get("next_open_et"),
+        "next_close_et": mkt.get("next_close_et"),
+    }
+    (run_dir / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    (run_dir / "market_context.json").write_text(json.dumps(market_context, indent=2), encoding="utf-8")
+    refresh_simple_view(base_dir, ts)
+    return run_dir
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Automated Yahoo-based stock/options analysis")
     parser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR), help="Output folder for run snapshots")
@@ -3899,6 +4271,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=DEFAULT_ENABLE_AFTER_HOURS,
         help="Enable after-hours/extended-hours pricing for analysis and post-analysis learning.",
+    )
+    parser.add_argument(
+        "--daily-evaluation-only",
+        action="store_true",
+        help="Generate the end-of-day improvement summary without producing a new recommendation scan.",
     )
     parser.add_argument(
         "--set-real-balance",
@@ -3962,6 +4339,10 @@ def main() -> int:
             f"real_trading_capital={REAL_TRADING_CAPITAL:.2f} "
             f"state_file={portfolio_state_path(base_dir)}"
         )
+        return 0
+    if bool(args.daily_evaluation_only):
+        run_dir = run_daily_evaluation_only(base_dir)
+        print(f"Daily evaluation completed. Results: {run_dir}")
         return 0
     symbol = str(args.symbol or "").strip().upper()
     try:
