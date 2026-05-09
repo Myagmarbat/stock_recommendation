@@ -189,10 +189,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
   - `trading.full_deploy_target_pct = 1.0`
   - Uses up to about 100% of current paper equity, subject to drawdown controls and exposure headroom
 
-## Optional AI advisor
+## Optional LangChain AI advisor
 
-The scanner can optionally call OpenAI after the deterministic top picks are built.
+The scanner can optionally call a LangChain-backed AI advisor after the deterministic top picks are built.
 This is disabled by default and is cost-capped in `config/agent_config.json` under `ai`.
+The default provider is OpenAI through `langchain-openai`, with `framework` set to `langchain`.
+
+The AI layer is an advisor, not the primary trading engine. Python computes the candidates, sizing, stops, targets, and budget controls first. The LangChain advisor reviews that structured payload and returns JSON review fields. In the default `advisory` mode, those fields are written into reports without changing trade actions.
 
 Recommended low-cost setup:
 
@@ -206,7 +209,10 @@ Then set:
 ```json
 "ai": {
   "enabled": true,
+  "provider": "openai",
+  "framework": "langchain",
   "model": "gpt-5-nano",
+  "api_key_env": "OPENAI_API_KEY",
   "monthly_budget_usd": 5.0,
   "review_top_n": 5,
   "max_runs_per_day": 6,
@@ -224,6 +230,29 @@ The default `advisory` mode adds AI review fields and report sections without ch
 Use `decision_mode` other than `advisory` only after paper-testing, because then AI `HOLD` decisions can downgrade a candidate before alerts and paper-trading updates.
 Cost control is enforced with `monthly_budget_usd`, `max_runs_per_day`, and `review_top_n`.
 
+Different agent profiles can use different config files. Create profile files by copying the base config:
+
+```bash
+cp config/agent_config.json config/agent_config.conservative.json
+cp config/agent_config.json config/agent_config.aggressive.json
+```
+
+Then run a selected profile:
+
+```bash
+python stock_option_agent/agent.py --config ./config/agent_config.json
+python stock_option_agent/agent.py --config ./config/agent_config.conservative.json
+python stock_option_agent/agent.py --config ./config/agent_config.aggressive.json
+```
+
+Each profile can set its own `ai.model`, `ai.api_key_env`, budget, review size, and `decision_mode`. Scheduler scripts use `AGENT_CONFIG_PATH`, so cron or launchd can point at a different agent profile without changing code:
+
+```bash
+AGENT_CONFIG_PATH="$PWD/config/agent_config.conservative.json" bash scripts/run_agent.sh
+```
+
+Current implementation note: the LangChain integration uses `ChatOpenAI` for structured JSON review calls. It is LangChain-backed and config-driven, but it is not yet a tool-calling LangChain `AgentExecutor`.
+
 ## stock_recommendation
 
 The new `stock_recommendation/` package is a controlled workflow for stable stock/ETF recommendations:
@@ -233,7 +262,7 @@ stock_recommendation
   -> collect data
   -> calculate signals
   -> run backtest
-  -> ask OpenAI for analysis/summary only
+  -> ask LangChain/OpenAI for analysis/summary only
   -> recommend trade
   -> paper-trade balance update
   -> log result
