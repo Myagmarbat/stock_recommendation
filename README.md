@@ -7,7 +7,7 @@ Automated scanner that:
 - Detects broad market trend (bullish, bearish, neutral) and adapts recommendations.
 - Produces top 10 picks every run.
 - Stores timestamped outputs for historical analysis.
-- Runs in background via Windows Task Scheduler or macOS launchd during market hours only on weekdays.
+- Runs in background via macOS launchd or Windows Task Scheduler during market hours only on weekdays.
 - Self-adjusts model weights and thresholds after each run based on prior pick correctness.
 - Applies run-to-run feedback learning so the next run uses updated logic immediately.
 - Tracks US market session status and next open/close times.
@@ -18,6 +18,31 @@ Automated scanner that:
 
 ## Setup
 
+macOS Terminal (`zsh`):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Do not use `.\.venv\Scripts\Activate.ps1` in macOS Terminal. That path is for Windows PowerShell. On macOS, the activation script is `.venv/bin/activate`.
+
+To confirm the virtual environment is active in macOS Terminal:
+
+```bash
+command -v python3
+python3 --version
+```
+
+The Python path should point into this project, for example:
+
+```text
+/Users/mdorjtse/workspace/stock_analyzer/.venv/bin/python3
+```
+
+If `which python` prints `python: aliased to python3`, that is a shell alias and does not mean activation failed. Use `command -v python3` instead.
+
 Windows:
 
 ```powershell
@@ -26,29 +51,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-macOS:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ## Quick Start
 
 1. Create and activate the virtual environment.
 2. Install dependencies.
 3. Run one manual scan to confirm the environment works.
-4. Install the platform scheduler: Windows Task Scheduler or macOS launchd.
+4. Install the platform scheduler: macOS launchd or Windows Task Scheduler.
 5. Start the scheduler once if you want an immediate first run.
 
 ## Run once
-
-Windows:
-
-```powershell
-python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json
-```
 
 macOS:
 
@@ -56,11 +67,10 @@ macOS:
 python stock_option_agent/agent.py --base-dir ./data --universe-count 50 --config ./config/agent_config.json
 ```
 
-Daily partition example on Windows:
+Windows:
 
 ```powershell
-$dayKey = Get-Date -Format "yyyyMMdd"
-python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --universe-count 50 --config .\config\agent_config.json
+python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json
 ```
 
 Daily partition example on macOS:
@@ -70,18 +80,25 @@ day_key="$(date +%Y%m%d)"
 python stock_option_agent/agent.py --base-dir "./data/daily/$day_key" --universe-count 50 --config ./config/agent_config.json
 ```
 
-## Run one symbol summary
-
-Windows:
+Daily partition example on Windows:
 
 ```powershell
-python .\stock_option_agent\agent.py --base-dir .\data --symbol AAPL --config .\config\agent_config.json
+$dayKey = Get-Date -Format "yyyyMMdd"
+python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --universe-count 50 --config .\config\agent_config.json
 ```
+
+## Run one symbol summary
 
 macOS:
 
 ```bash
 python stock_option_agent/agent.py --base-dir ./data --symbol AAPL --config ./config/agent_config.json
+```
+
+Windows:
+
+```powershell
+python .\stock_option_agent\agent.py --base-dir .\data --symbol AAPL --config .\config\agent_config.json
 ```
 
 Output files:
@@ -92,20 +109,20 @@ Output files:
 
 ## Set paper budget (one-shot override)
 
-Windows:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-$dayKey = Get-Date -Format "yyyyMMdd"
-python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --set-paper-budget 10000 --config .\config\agent_config.json
-```
-
 macOS:
 
 ```bash
 source .venv/bin/activate
 day_key="$(date +%Y%m%d)"
 python stock_option_agent/agent.py --base-dir "./data/daily/$day_key" --set-paper-budget 10000 --config ./config/agent_config.json
+```
+
+Windows:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$dayKey = Get-Date -Format "yyyyMMdd"
+python .\stock_option_agent\agent.py --base-dir ".\data\daily\$dayKey" --set-paper-budget 10000 --config .\config\agent_config.json
 ```
 
 Notes:
@@ -117,16 +134,16 @@ After-hours handling:
 - Default: disabled (regular session pricing only).
 - Enable explicitly:
 
-Windows:
-
-```powershell
-python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json --enable-after-hours
-```
-
 macOS:
 
 ```bash
 python stock_option_agent/agent.py --base-dir ./data --universe-count 50 --config ./config/agent_config.json --enable-after-hours
+```
+
+Windows:
+
+```powershell
+python .\stock_option_agent\agent.py --base-dir .\data --universe-count 50 --config .\config\agent_config.json --enable-after-hours
 ```
 
 ## News tuning
@@ -146,12 +163,12 @@ python stock_option_agent/agent.py --base-dir ./data --universe-count 50 --confi
 - `paper_initial_capital` is used only to seed the first portfolio state. After that, `data/portfolio/state.json` is the source of truth and the paper balance changes through simulated buys, sells, and mark-to-market P/L.
 Enable after-hours in the platform runner explicitly:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHours
-```
-
 ```bash
 ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHours
 ```
 
 ## Trading mode
@@ -285,18 +302,68 @@ Improvement actions when budget is under pressure:
 
 ## Background schedulers
 
-The project includes scheduler installers for both Windows and macOS:
-- Windows: `scripts/install_task_scheduler.ps1`
+The project includes separate scheduler installers:
 - macOS: `scripts/install_launchd.sh`
+- Windows: `scripts/install_task_scheduler.ps1`
 
 Both use the platform runner script and write daily output under `data/daily/YYYYMMDD/`, with `data/today` pointing at the current day.
 
-Quick scheduler commands:
+## macOS launchd
 
-| Platform | Install scheduler | Run now | Check status | Remove scheduler |
-| --- | --- | --- | --- | --- |
-| Windows | `powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1` | `Start-ScheduledTask -TaskName stock_option_agent` | `Get-ScheduledTask -TaskName stock_option_agent` | `powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_task_scheduler.ps1` |
-| macOS | `bash scripts/install_launchd.sh` | `launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"` | `launchctl list \| grep com.local.stock_option_agent` | `bash scripts/uninstall_launchd.sh` |
+Recommended operating flow:
+
+1. Install the launchd agent.
+2. Start it once manually if you want an immediate first run.
+3. Verify the launchd job is loaded.
+4. Check `data/today/logs/` and `data/today/latest/` after the first run.
+5. Unload the launchd job when you need to pause background execution.
+
+Install and load the launchd job:
+
+```bash
+bash scripts/install_launchd.sh
+```
+
+Manual one-shot run through the macOS runner:
+
+```bash
+bash scripts/run_agent.sh
+```
+
+Manual one-shot run with after-hours enabled:
+
+```bash
+ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
+```
+
+Check status:
+
+```bash
+launchctl list | grep com.local.stock_option_agent
+```
+
+Run immediately:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"
+```
+
+Remove job:
+
+```bash
+bash scripts/uninstall_launchd.sh
+```
+
+Default macOS schedule behavior:
+- Runs every 5 minutes from `6:30 AM` through `1:00 PM` local time
+- Runs one evaluation-only pass at `1:05 PM` local time to assess every recommendation from the day's 5-minute runs, write P/L, paper balance, and next-day improvements
+- Uses weekdays only (`MON-FRI`)
+- Intended for a macOS machine set to Pacific Time to match `09:30-16:00 ET`
+- Uses `scripts/run_agent.sh`
+- Writes per-run logs under `data/daily/YYYYMMDD/logs/`
+- Refreshes `data/today` as a symlink to the current `data/daily/YYYYMMDD/` partition
+- The runner exits without analysis outside weekday `06:30 <= time < 13:00 PT`, except the `13:00 <= time < 13:15 PT` final evaluation-only window
+- Does not auto-run after-hours or weekends unless run with `ENABLE_AFTER_HOURS=1`
 
 ## Windows Task Scheduler
 
@@ -368,27 +435,13 @@ Re-enable the background scheduler:
 Enable-ScheduledTask -TaskName stock_option_agent
 ```
 
-Common scheduler actions:
-- Install or refresh the task definition:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\install_task_scheduler.ps1`
-- Run one cycle immediately:
-  - `Start-ScheduledTask -TaskName stock_option_agent`
-- Stop the current in-progress run:
-  - `Stop-ScheduledTask -TaskName stock_option_agent`
-- Pause future scheduled runs:
-  - `Disable-ScheduledTask -TaskName stock_option_agent`
-- Resume future scheduled runs:
-  - `Enable-ScheduledTask -TaskName stock_option_agent`
-- Remove the task completely:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_task_scheduler.ps1`
-
 Troubleshooting:
 - If the task exists but no fresh output appears, check `data\today\logs\` first.
 - If `Get-ScheduledTaskInfo` shows failures, run `powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -Force` manually to reproduce the issue in the foreground.
 - If Python or dependencies changed, reinstall the task after confirming `.venv` is valid.
 - If you want after-hours scheduling behavior, reinstall with `-EnableAfterHours`.
 
-Default schedule behavior:
+Default Windows schedule behavior:
 - Runs every 5 minutes from `6:30 AM` through `1:00 PM` local time
 - Runs one evaluation-only pass at `1:05 PM` local time to assess every recommendation from the day's 5-minute runs, write P/L, paper balance, and next-day improvements
 - Uses weekdays only (`MON-FRI`)
@@ -398,61 +451,6 @@ Default schedule behavior:
 - Refreshes `data/today` as a directory junction to the current `data/daily/YYYYMMDD/` partition
 - The runner exits without analysis outside weekday `06:30 <= time < 13:00 PT`, except the `13:00 <= time < 13:15 PT` final evaluation-only window
 - Does not auto-run after-hours or weekends unless installed with `-EnableAfterHours`
-
-## macOS launchd
-
-Recommended operating flow:
-
-1. Install the launchd agent.
-2. Start it once manually if you want an immediate first run.
-3. Verify the launchd job is loaded.
-4. Check `data/today/logs/` and `data/today/latest/` after the first run.
-5. Unload the launchd job when you need to pause background execution.
-
-Install and load the launchd job:
-
-```bash
-bash scripts/install_launchd.sh
-```
-
-Manual one-shot run through the macOS runner:
-
-```bash
-bash scripts/run_agent.sh
-```
-
-Manual one-shot run with after-hours enabled:
-
-```bash
-ENABLE_AFTER_HOURS=1 bash scripts/run_agent.sh
-```
-
-Check status:
-
-```bash
-launchctl list | grep com.local.stock_option_agent
-```
-
-Run immediately:
-
-```bash
-launchctl kickstart -k "gui/$(id -u)/com.local.stock_option_agent"
-```
-
-Remove job:
-
-```bash
-bash scripts/uninstall_launchd.sh
-```
-
-Default macOS schedule behavior:
-- Runs on weekdays during the regular US market session window: `06:30` through `13:00` local time
-- The current launchd installer schedules every 30 minutes in that window
-- Intended for a macOS machine set to Pacific Time to match `09:30-16:00 ET`
-- Uses `scripts/run_agent.sh`
-- Writes per-run logs under `data/daily/YYYYMMDD/logs/`
-- Refreshes `data/today` as a symlink to the current `data/daily/YYYYMMDD/` partition
-- Does not auto-run on weekends
 
 ## Important
 

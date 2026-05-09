@@ -25,21 +25,23 @@ cat <<PLIST
     <array>
 PLIST
 
-# Weekdays only, every 30 minutes during US regular market hours in Pacific Time:
-# 06:30 to 13:00 PT (09:30 to 16:00 ET)
+# Weekdays only, every 5 minutes during US regular market hours in Pacific Time:
+# 06:30 to 13:00 PT (09:30 to 16:00 ET), plus one final evaluation at 13:05 PT.
 for weekday in 1 2 3 4 5; do
-  cat <<PLIST
-      <dict><key>Weekday</key><integer>$weekday</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  for minute in 30 35 40 45 50 55; do
+    cat <<PLIST
+      <dict><key>Weekday</key><integer>$weekday</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>$minute</integer></dict>
 PLIST
+  done
   for hour in 7 8 9 10 11 12; do
-    for minute in 0 30; do
+    for minute in 0 5 10 15 20 25 30 35 40 45 50 55; do
       cat <<PLIST
       <dict><key>Weekday</key><integer>$weekday</integer><key>Hour</key><integer>$hour</integer><key>Minute</key><integer>$minute</integer></dict>
 PLIST
     done
   done
   cat <<PLIST
-      <dict><key>Weekday</key><integer>$weekday</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
+      <dict><key>Weekday</key><integer>$weekday</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>5</integer></dict>
 PLIST
 done
 
@@ -64,4 +66,4 @@ launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl load "$PLIST_PATH"
 
 echo "Installed and loaded: $PLIST_PATH"
-echo "Runs weekdays 06:30-13:00 PT every 30 minutes (market hours only)."
+echo "Runs weekdays every 5 minutes from 06:30-13:00 PT, then one daily evaluation at 13:05 PT."
