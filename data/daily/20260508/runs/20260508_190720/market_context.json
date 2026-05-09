@@ -1,0 +1,69 @@
+{
+  "regime": "bullish",
+  "spy_20d_return": 0.0736773803044588,
+  "qqq_20d_return": 0.14898196972156486,
+  "regime_score": 1.2226593500260237,
+  "market_open": true,
+  "market_session": "regular",
+  "market_time_et": "2026-05-08 15:05:04 EDT",
+  "market_time_pt": "2026-05-08 12:05:04 PDT",
+  "next_open_et": "2026-05-11 09:30:00 EDT",
+  "next_close_et": "2026-05-08 16:00:00 EDT",
+  "next_open_pt": "2026-05-11 06:30:00 PDT",
+  "next_close_pt": "2026-05-08 13:00:00 PDT",
+  "minutes_to_open": 3984,
+  "minutes_to_close": 54,
+  "holiday_calendar_applied": false,
+  "universe_count": 50,
+  "model_params_file": "data/model/model_params.json",
+  "enable_after_hours": false,
+  "analysis_order": [
+    "fundamental",
+    "technical",
+    "news",
+    "market_trend",
+    "category_trend"
+  ],
+  "price_reference_mode": "intraday_last_trade",
+  "price_reference_close_date_pt": "2026-05-07",
+  "weekend_reference": "",
+  "earnings_catalyst": {
+    "enabled": true,
+    "window_days": [
+      2,
+      30
+    ],
+    "note": "buy bias before earnings when outlook and current price setup are supportive"
+  },
+  "market_trend_score": 0.76,
+  "category_context": {
+    "Technology": 0.2020121774798047,
+    "Financial Services": -0.008807549703858886,
+    "Financial": -0.008807549703858886,
+    "Healthcare": -0.031830821619322824,
+    "Consumer Defensive": 0.033415062809888596,
+    "Consumer Cyclical": 0.05429253236833631,
+    "Industrials": 0.0030394787718375227,
+    "Utilities": -0.03298122007818527,
+    "Real Estate": 0.035448574964076496,
+    "Energy": -0.02302578230349195,
+    "Basic Materials": -0.012071225713647715,
+    "Communication Services": 0.016286385225154465,
+    "world": 0.05857249019487276,
+    "oil": 0.04779325392159306
+  },
+  "model_weights": {
+    "fundamental": 0.39366288221532547,
+    "technical": 0.4268903864962476,
+    "news": 0.15265437086895356
+  },
+  "threshold_adjustments": {
+    "buy": -0.01,
+    "short": 0.0
+  },
+  "post_analysis": {
+    "status": "too_fresh",
+    "evaluated_run_id": "20260508_190234",
+    "age_minutes": 2
+  }
+}

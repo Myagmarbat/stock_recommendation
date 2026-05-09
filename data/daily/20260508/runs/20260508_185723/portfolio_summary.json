@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_185723",
+  "capital_balance": 10000.0,
+  "real_trading_capital": 10000.0,
+  "start_equity": 10104.4516,
+  "paper_balance": 10100.1929,
+  "simulation_balance": 10100.1929,
+  "run_pnl": -4.2587,
+  "run_return_pct": -0.0421,
+  "total_return_pct": 1.0019,
+  "cash": 25.3679,
+  "current_exposure": 10074.825,
+  "peak_equity": 10117.3027,
+  "drawdown_pct": 0.1691,
+  "open_positions": 10,
+  "new_events": 0,
+  "risk_profile": "LOW_RISK_HIGH_LEVEL",
+  "risk_limits": {
+    "risk_per_trade_pct": 0.75,
+    "max_stock_alloc_pct": 12.0,
+    "max_option_alloc_pct": 1.0,
+    "max_portfolio_exposure_pct": 100.0,
+    "max_open_positions": 20,
+    "full_budget_deploy": true
+  },
+  "budget_controls": {
+    "regime": "normal",
+    "baseline_equity": 10000.0,
+    "peak_equity": 10117.3027,
+    "drawdown_pct": 0.1691,
+    "growth_vs_baseline_pct": 1.0019,
+    "effective_risk_per_trade_pct": 0.75,
+    "effective_max_stock_alloc_pct": 12.0,
+    "effective_max_option_alloc_pct": 1.0,
+    "effective_target_exposure_pct": 100.0,
+    "effective_max_open_positions": 20,
+    "reserve_cash_pct": 0.0
+  },
+  "initial_capital": 10000.0,
+  "end_equity": 10100.1929
+}

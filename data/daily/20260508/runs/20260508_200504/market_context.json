@@ -1,0 +1,9 @@
+{
+  "regime": "daily_evaluation_only",
+  "market_open": false,
+  "market_session": "after_hours",
+  "price_reference_mode": "last_regular_close",
+  "price_reference_close_date_pt": "2026-05-08",
+  "next_open_et": "2026-05-11 09:30:00 EDT",
+  "next_close_et": "2026-05-11 16:00:00 EDT"
+}

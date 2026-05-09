@@ -7,7 +7,7 @@ Automated scanner that:
 - Detects broad market trend (bullish, bearish, neutral) and adapts recommendations.
 - Produces top 10 picks every run.
 - Stores timestamped outputs for historical analysis.
-- Runs in background via macOS launchd or Windows Task Scheduler during market hours only on weekdays.
+- Runs in background via macOS launchd, macOS/Linux cron, or Windows Task Scheduler during market hours only on weekdays.
 - Self-adjusts model weights and thresholds after each run based on prior pick correctness.
 - Applies run-to-run feedback learning so the next run uses updated logic immediately.
 - Tracks US market session status and next open/close times.
@@ -25,6 +25,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Optional local environment file for scheduled runs:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with local secrets such as `OPENAI_API_KEY`. The Unix runner loads `.env` automatically so launchd and cron jobs can see the same values as manual runs.
 
 Do not use `.\.venv\Scripts\Activate.ps1` in macOS Terminal. That path is for Windows PowerShell. On macOS, the activation script is `.venv/bin/activate`.
 
@@ -56,8 +64,9 @@ pip install -r requirements.txt
 1. Create and activate the virtual environment.
 2. Install dependencies.
 3. Run one manual scan to confirm the environment works.
-4. Install the platform scheduler: macOS launchd or Windows Task Scheduler.
-5. Start the scheduler once if you want an immediate first run.
+4. Optional: copy `.env.example` to `.env` and add local keys.
+5. Install the platform scheduler: macOS launchd, macOS/Linux cron, or Windows Task Scheduler.
+6. Start the scheduler once if you want an immediate first run.
 
 ## Run once
 
@@ -179,6 +188,87 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
   - `trading.full_budget_deploy = true`
   - `trading.full_deploy_target_pct = 1.0`
   - Uses up to about 100% of current paper equity, subject to drawdown controls and exposure headroom
+
+## Optional AI advisor
+
+The scanner can optionally call OpenAI after the deterministic top picks are built.
+This is disabled by default and is cost-capped in `config/agent_config.json` under `ai`.
+
+Recommended low-cost setup:
+
+```bash
+cp .env.example .env
+# edit .env and set OPENAI_API_KEY
+```
+
+Then set:
+
+```json
+"ai": {
+  "enabled": true,
+  "model": "gpt-5-nano",
+  "monthly_budget_usd": 5.0,
+  "review_top_n": 5,
+  "max_runs_per_day": 6,
+  "decision_mode": "advisory"
+}
+```
+
+AI outputs:
+- `data/today/latest/ai_decision.json`
+- `data/today/ai/decision_<timestamp>.json`
+- `data/ai/usage_YYYYMM.json`
+- `data/today/latest/ai_daily_improvement.json` after the daily evaluation run
+
+The default `advisory` mode adds AI review fields and report sections without changing the scanner's trade actions.
+Use `decision_mode` other than `advisory` only after paper-testing, because then AI `HOLD` decisions can downgrade a candidate before alerts and paper-trading updates.
+Cost control is enforced with `monthly_budget_usd`, `max_runs_per_day`, and `review_top_n`.
+
+## stock_recommendation
+
+The new `stock_recommendation/` package is a controlled workflow for stable stock/ETF recommendations:
+
+```text
+stock_recommendation
+  -> collect data
+  -> calculate signals
+  -> run backtest
+  -> ask OpenAI for analysis/summary only
+  -> recommend trade
+  -> paper-trade balance update
+  -> log result
+```
+
+First scope:
+- Universe: `SPY`, `QQQ`, `DIA`, `IWM`, `VTI`, `AAPL`, `MSFT`, `NVDA`, `AMZN`, `GOOGL`
+- Actions: `buy`, `sell`, `hold`
+- No shorting yet
+- Paper balance: `$10,000`
+- Risk per trade: max `1%`
+- Max trades/day: `3`
+- Storage: SQLite at `stock_recommendation/data/paper_trades.db`
+
+Run:
+
+```bash
+python -m stock_recommendation.main
+```
+
+Run without changing the paper ledger:
+
+```bash
+python -m stock_recommendation.main --no-paper-update
+```
+
+Enable OpenAI summary/review only:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export STOCK_RECOMMENDATION_AI=1
+export STOCK_RECOMMENDATION_MODEL="gpt-4.1-mini"
+```
+
+The LLM does not freely decide trades. Python computes the recommendation score from stability, trend, liquidity, fundamentals, news sentiment, and backtest confidence. OpenAI only explains the recommendation, identifies risks, and suggests strategy improvements.
 
 ## Output
 
@@ -304,6 +394,7 @@ Improvement actions when budget is under pressure:
 
 The project includes separate scheduler installers:
 - macOS: `scripts/install_launchd.sh`
+- macOS/Linux cron: `scripts/install_cron.sh`
 - Windows: `scripts/install_task_scheduler.ps1`
 
 Both use the platform runner script and write daily output under `data/daily/YYYYMMDD/`, with `data/today` pointing at the current day.
@@ -364,6 +455,54 @@ Default macOS schedule behavior:
 - Refreshes `data/today` as a symlink to the current `data/daily/YYYYMMDD/` partition
 - The runner exits without analysis outside weekday `06:30 <= time < 13:00 PT`, except the `13:00 <= time < 13:15 PT` final evaluation-only window
 - Does not auto-run after-hours or weekends unless run with `ENABLE_AFTER_HOURS=1`
+
+## macOS/Linux cron
+
+Use cron when you want a portable Unix scheduler instead of macOS launchd.
+
+Install managed cron entries:
+
+```bash
+bash scripts/install_cron.sh
+```
+
+View installed entries:
+
+```bash
+crontab -l
+```
+
+Manual one-shot run through the Unix runner:
+
+```bash
+bash scripts/run_agent.sh
+```
+
+Remove only the managed project cron entries:
+
+```bash
+bash scripts/uninstall_cron.sh
+```
+
+Default cron schedule behavior:
+- Runs weekdays every 5 minutes from `6:30 AM` through `1:00 PM` local machine time
+- Runs one evaluation-only pass at `1:05 PM` local machine time
+- Uses `scripts/run_agent.sh`
+- The runner still checks `America/Los_Angeles` time and exits without analysis outside weekday `06:30 <= time < 13:00 PT`, except the `13:00 <= time < 13:15 PT` final evaluation-only window
+- For US market hours, keep the machine timezone set to Pacific Time or prefer launchd/systemd timers with explicit timezone handling
+
+## AI schedule and cost
+
+With the default AI config in `config/agent_config.json`, AI is disabled unless `ai.enabled` is set to `true` and `OPENAI_API_KEY` is present.
+
+When enabled:
+- A regular scan can make at most one AI advisor call after the deterministic top picks are built.
+- The final `1:05 PM` daily evaluation can make one additional AI improvement call when `daily_improvement_enabled` is `true`.
+- `max_runs_per_day` defaults to `6`, so the scanner will stop making AI calls after 6 successful AI calls in a UTC day even though cron/launchd continues running the deterministic scanner every 5 minutes.
+- `monthly_budget_usd` defaults to `$5.00`; once tracked estimated spend reaches that value, later AI calls are skipped.
+- Cost is estimated from actual token usage and the configured prices: `input_price_per_million = 0.05`, `output_price_per_million = 0.40`.
+
+The 06:30-13:00 weekday schedule creates about 78 regular scan opportunities per trading day, plus one evaluation pass. With defaults, AI usage is capped to 6 calls/day, not 79 calls/day. At the configured `gpt-5-nano` rates, 6 small JSON review calls per trading day should normally remain below `$5/month`; the hard budget cap prevents the app from continuing AI calls after the configured monthly budget is reached.
 
 ## Windows Task Scheduler
 

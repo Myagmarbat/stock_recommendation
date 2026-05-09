@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_145204",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "GOOGL",
+      "score": 1.116,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 399.33,
+      "target": 419.92,
+      "stop": 386.98,
+      "rr": 1.67
+    },
+    {
+      "symbol": "AMZN",
+      "score": 0.804,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 271.22,
+      "target": 285.83,
+      "stop": 262.45,
+      "rr": 1.67
+    },
+    {
+      "symbol": "SMH",
+      "score": 0.8,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 556.41,
+      "target": 587.5,
+      "stop": 537.75,
+      "rr": 1.67
+    }
+  ]
+}

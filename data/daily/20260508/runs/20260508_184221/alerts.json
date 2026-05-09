@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_184221",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "GOOGL",
+      "score": 1.068,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 397.5,
+      "target": 418.09,
+      "stop": 385.15,
+      "rr": 1.67
+    },
+    {
+      "symbol": "TSM",
+      "score": 1.008,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 407.44,
+      "target": 437.66,
+      "stop": 389.31,
+      "rr": 1.67
+    },
+    {
+      "symbol": "CSCO",
+      "score": 0.981,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 96.24,
+      "target": 100.88,
+      "stop": 93.46,
+      "rr": 1.67
+    }
+  ]
+}

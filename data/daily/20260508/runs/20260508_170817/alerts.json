@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_170817",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "GOOGL",
+      "score": 1.133,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 396.46,
+      "target": 417.05,
+      "stop": 384.1,
+      "rr": 1.67
+    },
+    {
+      "symbol": "AVGO",
+      "score": 0.906,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 428.31,
+      "target": 458.62,
+      "stop": 410.13,
+      "rr": 1.67
+    },
+    {
+      "symbol": "CAT",
+      "score": 0.872,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 898.01,
+      "target": 955.93,
+      "stop": 863.25,
+      "rr": 1.67
+    }
+  ]
+}

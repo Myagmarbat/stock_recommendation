@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_172205",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "GOOGL",
+      "score": 1.116,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 396.73,
+      "target": 417.32,
+      "stop": 384.37,
+      "rr": 1.67
+    },
+    {
+      "symbol": "AVGO",
+      "score": 0.912,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 430.13,
+      "target": 460.56,
+      "stop": 411.87,
+      "rr": 1.67
+    },
+    {
+      "symbol": "AMZN",
+      "score": 0.837,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 272.25,
+      "target": 286.88,
+      "stop": 263.47,
+      "rr": 1.67
+    }
+  ]
+}

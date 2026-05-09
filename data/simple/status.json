@@ -1,0 +1,8 @@
+{
+  "timestamp_utc": "2026-05-08T20:05:04Z",
+  "run_id": "20260508_200504",
+  "source_base_dir": "/Users/mdorjtse/workspace/stock_analyzer/data/daily/20260508",
+  "source_latest_dir": "/Users/mdorjtse/workspace/stock_analyzer/data/daily/20260508/latest",
+  "latest_log": "/Users/mdorjtse/workspace/stock_analyzer/data/daily/20260508/logs/run_20260508_200504.log",
+  "note": "Simple view with key files only."
+}

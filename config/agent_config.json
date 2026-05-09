@@ -7,7 +7,8 @@
     "include_downtrend_symbols": true,
     "downtrend_symbol_ratio": 0.4,
     "full_budget_deploy": true,
-    "full_deploy_target_pct": 1.0
+    "full_deploy_target_pct": 1.0,
+    "max_category_exposure_pct": 0.35
   },
   "notifications": {
     "enabled": true,
@@ -56,5 +57,29 @@
       "federal reserve": 1.2,
       "reddit": 0.45
     }
+  },
+  "ai": {
+    "enabled": false,
+    "provider": "openai",
+    "framework": "langchain",
+    "model": "gpt-5-nano",
+    "api_key_env": "OPENAI_API_KEY",
+    "monthly_budget_usd": 5.0,
+    "review_top_n": 5,
+    "max_runs_per_day": 6,
+    "max_output_tokens": 900,
+    "timeout_seconds": 30,
+    "decision_mode": "advisory",
+    "allow_action_upgrades": false,
+    "input_price_per_million": 0.05,
+    "output_price_per_million": 0.40,
+    "daily_improvement_enabled": true
+  },
+  "universe": {
+    "mode": "stable_plus_movers",
+    "stable_core_ratio": 0.7,
+    "max_symbols_scored": 80,
+    "include_etfs": true,
+    "max_category_weight": 0.35
   }
 }

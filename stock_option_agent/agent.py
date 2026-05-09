@@ -29,6 +29,7 @@ YAHOO_GAINERS_PAGE = "https://finance.yahoo.com/markets/stocks/gainers/"
 DEFAULT_BASE_DIR = Path("data")
 MODEL_STATE_PATH = Path("data/model/model_params.json")
 AGENT_CONFIG_PATH = Path("config/agent_config.json")
+AGENT_NAME = "stock_recommendation"
 US_MARKET_TZ = ZoneInfo("America/New_York")
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 US_MARKET_OPEN = dt_time(9, 30)
@@ -145,6 +146,32 @@ DEFAULT_NOTIFICATIONS_CONFIG = {
     "good_trade_min_rr": 1.5,
     "cooldown_minutes": 60,
     "max_alert_items": 3,
+}
+
+DEFAULT_AI_CONFIG = {
+    "enabled": False,
+    "provider": "openai",
+    "framework": "langchain",
+    "model": "gpt-5-nano",
+    "api_key_env": "OPENAI_API_KEY",
+    "monthly_budget_usd": 5.0,
+    "review_top_n": 5,
+    "max_runs_per_day": 6,
+    "max_output_tokens": 900,
+    "timeout_seconds": 30,
+    "decision_mode": "advisory",
+    "allow_action_upgrades": False,
+    "input_price_per_million": 0.05,
+    "output_price_per_million": 0.40,
+    "daily_improvement_enabled": True,
+}
+
+DEFAULT_UNIVERSE_CONFIG = {
+    "mode": "stable_plus_movers",
+    "stable_core_ratio": 0.7,
+    "max_symbols_scored": 80,
+    "include_etfs": True,
+    "max_category_weight": 0.35,
 }
 
 DEFAULT_MODEL_PARAMS = {
@@ -266,18 +293,22 @@ DEFAULT_TRADING_CONFIG = {
     "downtrend_symbol_ratio": 0.4,
     "full_budget_deploy": False,
     "full_deploy_target_pct": 1.0,
+    "max_category_exposure_pct": 0.35,
 }
 
 DEFAULT_AGENT_CONFIG = {
     "news": DEFAULT_NEWS_CONFIG,
     "notifications": DEFAULT_NOTIFICATIONS_CONFIG,
     "trading": DEFAULT_TRADING_CONFIG,
+    "ai": DEFAULT_AI_CONFIG,
+    "universe": DEFAULT_UNIVERSE_CONFIG,
 }
 
 
 @dataclass
 class AnalysisRow:
     symbol: str
+    category: str
     price: float
     market_regime: str
     fundamental_score: float
@@ -394,6 +425,8 @@ def load_news_config(path: Path) -> dict[str, Any]:
 NEWS_CONFIG: dict[str, Any] = dict(DEFAULT_NEWS_CONFIG)
 NOTIFICATIONS_CONFIG: dict[str, Any] = dict(DEFAULT_NOTIFICATIONS_CONFIG)
 TRADING_CONFIG: dict[str, Any] = dict(DEFAULT_TRADING_CONFIG)
+AI_CONFIG: dict[str, Any] = dict(DEFAULT_AI_CONFIG)
+UNIVERSE_CONFIG: dict[str, Any] = dict(DEFAULT_UNIVERSE_CONFIG)
 
 
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -799,6 +832,71 @@ def fetch_market_movers(count: int = 50, include_downtrend: bool = True, downtre
     if combined:
         return merge_with_fallback(combined, count)
     return fetch_top_gainers(count)
+
+
+def stable_symbol_score(symbol: str) -> tuple[str, float, str]:
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
+        if len(hist) < 80:
+            return symbol, -999.0, ""
+        info = safe_ticker_info(ticker)
+        quote_type = str(info.get("quoteType", "")).upper()
+        sector = str(info.get("sector") or info.get("category") or quote_type or "Unknown")
+        close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+        volume = pd.to_numeric(hist.get("Volume", pd.Series(dtype=float)), errors="coerce").dropna()
+        if close.empty:
+            return symbol, -999.0, sector
+        price = safe_float(close.iloc[-1], 0.0)
+        dollar_vol = safe_float(volume.tail(20).mean(), 0.0) * price if not volume.empty else 0.0
+        market_cap = safe_float(info.get("marketCap"), safe_float(info.get("totalAssets"), 0.0))
+        ret20 = safe_float((close.iloc[-1] / close.iloc[-20]) - 1, 0.0) if len(close) >= 20 else 0.0
+        ret126 = safe_float((close.iloc[-1] / close.iloc[-126]) - 1, 0.0) if len(close) >= 126 else 0.0
+        v20 = safe_float(close.pct_change().rolling(20).std().iloc[-1], 0.0)
+        liquidity = clamp(dollar_vol / 500_000_000.0, 0.0, 1.0)
+        size = clamp(market_cap / 250_000_000_000.0, 0.0, 1.0)
+        trend = clamp((0.55 * ret20 + 0.45 * ret126) / 0.20, -1.0, 1.0)
+        stability = 1.0 - clamp(v20 / MAX_VOL20, 0.0, 1.0)
+        etf_bonus = 0.10 if quote_type == "ETF" else 0.0
+        score = 0.30 * liquidity + 0.25 * size + 0.25 * stability + 0.20 * trend + etf_bonus
+        return symbol, score, sector
+    except Exception:
+        return symbol, -999.0, ""
+
+
+def fetch_stable_symbols(count: int = 50) -> list[str]:
+    include_etfs = bool(UNIVERSE_CONFIG.get("include_etfs", True))
+    pool = list(dict.fromkeys(STABLE_UNIVERSE + FALLBACK_UNIVERSE))
+    if not include_etfs:
+        pool = [s for s in pool if s not in {"SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLI", "XBI", "SMH", "TLT", "GLD"}]
+    max_scored = max(count, int(safe_float(UNIVERSE_CONFIG.get("max_symbols_scored"), 80)))
+    scored = [stable_symbol_score(sym) for sym in pool[:max_scored]]
+    scored = [item for item in scored if item[1] > -100]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    symbols = [sym for sym, _score, _sector in scored]
+    return merge_with_fallback(filter_equity_symbols(symbols), count)
+
+
+def select_universe_symbols(count: int, market_session: str) -> tuple[list[str], str]:
+    mode = str(UNIVERSE_CONFIG.get("mode", "stable_plus_movers")).lower()
+    if market_session == "weekend" or mode == "stable":
+        return fetch_stable_symbols(count), "stable"
+    if mode == "movers":
+        return fetch_market_movers(
+            count,
+            bool(TRADING_CONFIG.get("include_downtrend_symbols", True)),
+            safe_float(TRADING_CONFIG.get("downtrend_symbol_ratio", 0.4), 0.4),
+        ), "movers"
+
+    stable_n = int(round(count * clamp(safe_float(UNIVERSE_CONFIG.get("stable_core_ratio"), 0.7), 0.2, 1.0)))
+    movers_n = max(0, count - stable_n)
+    stable = fetch_stable_symbols(max(1, stable_n))
+    movers = fetch_market_movers(
+        movers_n,
+        bool(TRADING_CONFIG.get("include_downtrend_symbols", True)),
+        safe_float(TRADING_CONFIG.get("downtrend_symbol_ratio", 0.4), 0.4),
+    ) if movers_n else []
+    return list(dict.fromkeys(stable + movers))[:count], "stable_plus_movers"
 
 
 def filter_equity_symbols(symbols: list[str]) -> list[str]:
@@ -1565,6 +1663,7 @@ def analyze_symbol(
             return None
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
         info = safe_ticker_info(ticker)
+        category = str(info.get("sector") or info.get("category") or info.get("quoteType") or "Unknown")
         news_items = safe_ticker_news(ticker)
         gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
         if not gate_ok:
@@ -1612,6 +1711,7 @@ def analyze_symbol(
         )
         return AnalysisRow(
             symbol=symbol,
+            category=category,
             price=round(price, 4),
             market_regime=regime,
             fundamental_score=round(fund, 4),
@@ -1659,6 +1759,313 @@ def ensure_dirs(base_dir: Path) -> dict[str, Path]:
     history.mkdir(parents=True, exist_ok=True)
     portfolio.mkdir(parents=True, exist_ok=True)
     return {"runs": runs, "history": history, "portfolio": portfolio}
+
+
+def ai_usage_path(base_dir: Path) -> Path:
+    month_key = now_utc().strftime("%Y%m")
+    if base_dir.parent.name == "daily":
+        return base_dir.parent.parent / "ai" / f"usage_{month_key}.json"
+    return base_dir / "ai" / f"usage_{month_key}.json"
+
+
+def load_ai_usage(base_dir: Path) -> dict[str, Any]:
+    path = ai_usage_path(base_dir)
+    if not path.exists():
+        return {
+            "month": now_utc().strftime("%Y%m"),
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "daily_calls": {},
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("daily_calls", {})
+            return data
+    except Exception:
+        pass
+    return {"month": now_utc().strftime("%Y%m"), "calls": 0, "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0.0, "daily_calls": {}}
+
+
+def save_ai_usage(base_dir: Path, usage: dict[str, Any]) -> None:
+    path = ai_usage_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(usage, indent=2), encoding="utf-8")
+
+
+def ai_budget_status(base_dir: Path) -> dict[str, Any]:
+    cfg = AI_CONFIG
+    usage = load_ai_usage(base_dir)
+    day_key = now_utc().strftime("%Y%m%d")
+    spent = safe_float(usage.get("estimated_cost_usd"), 0.0)
+    budget = max(0.0, safe_float(cfg.get("monthly_budget_usd"), 5.0))
+    daily_calls = usage.get("daily_calls", {})
+    if not isinstance(daily_calls, dict):
+        daily_calls = {}
+    calls_today = int(safe_float(daily_calls.get(day_key), 0))
+    max_runs = max(0, int(safe_float(cfg.get("max_runs_per_day"), 6)))
+    return {
+        "usage": usage,
+        "day_key": day_key,
+        "spent": spent,
+        "budget": budget,
+        "calls_today": calls_today,
+        "max_runs_per_day": max_runs,
+        "allowed": spent < budget and calls_today < max_runs,
+    }
+
+
+def record_ai_usage(base_dir: Path, input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    usage = load_ai_usage(base_dir)
+    day_key = now_utc().strftime("%Y%m%d")
+    in_tokens = max(0, int(input_tokens))
+    out_tokens = max(0, int(output_tokens))
+    in_price = safe_float(AI_CONFIG.get("input_price_per_million"), 0.05)
+    out_price = safe_float(AI_CONFIG.get("output_price_per_million"), 0.40)
+    cost = (in_tokens / 1_000_000.0 * in_price) + (out_tokens / 1_000_000.0 * out_price)
+    usage["calls"] = int(safe_float(usage.get("calls"), 0)) + 1
+    usage["input_tokens"] = int(safe_float(usage.get("input_tokens"), 0)) + in_tokens
+    usage["output_tokens"] = int(safe_float(usage.get("output_tokens"), 0)) + out_tokens
+    usage["estimated_cost_usd"] = round(safe_float(usage.get("estimated_cost_usd"), 0.0) + cost, 6)
+    daily_calls = usage.get("daily_calls", {})
+    if not isinstance(daily_calls, dict):
+        daily_calls = {}
+    daily_calls[day_key] = int(safe_float(daily_calls.get(day_key), 0)) + 1
+    usage["daily_calls"] = daily_calls
+    save_ai_usage(base_dir, usage)
+    return usage
+
+
+def ai_enabled() -> tuple[bool, str]:
+    if not bool(AI_CONFIG.get("enabled", False)):
+        return False, "disabled_in_config"
+    if str(AI_CONFIG.get("provider", "openai")).lower() != "openai":
+        return False, "unsupported_provider"
+    key_env = str(AI_CONFIG.get("api_key_env", "OPENAI_API_KEY"))
+    if not os.getenv(key_env, "").strip():
+        return False, f"missing_env:{key_env}"
+    return True, "enabled"
+
+
+def compact_ai_candidate(row: pd.Series) -> dict[str, Any]:
+    return {
+        "symbol": str(row.get("symbol", "")),
+        "category": str(row.get("category", "")),
+        "price": round(safe_float(row.get("price"), 0.0), 2),
+        "market_regime": str(row.get("market_regime", "")),
+        "total_score": round(safe_float(row.get("total_score"), 0.0), 4),
+        "fundamental_score": round(safe_float(row.get("fundamental_score"), 0.0), 4),
+        "technical_score": round(safe_float(row.get("technical_score"), 0.0), 4),
+        "news_score": round(safe_float(row.get("news_score"), 0.0), 4),
+        "earnings_days": int(safe_float(row.get("upcoming_earnings_days"), -1)),
+        "earnings_event_score": round(safe_float(row.get("earnings_event_score"), 0.0), 4),
+        "action_stock": str(row.get("action_stock", "")),
+        "entry_price": round(safe_float(row.get("entry_price"), 0.0), 2),
+        "target_price": round(safe_float(row.get("target_price"), 0.0), 2),
+        "stop_price": round(safe_float(row.get("stop_price"), 0.0), 2),
+        "risk_reward": round(safe_float(row.get("risk_reward"), 0.0), 2),
+        "stock_qty": int(safe_float(row.get("stock_qty"), 0)),
+        "reason": str(row.get("brief_reason", row.get("reason", "")))[:500],
+    }
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def call_openai_json(system_prompt: str, user_payload: dict[str, Any], max_output_tokens: int) -> tuple[dict[str, Any], dict[str, int], str]:
+    if str(AI_CONFIG.get("framework", "langchain")).lower() == "langchain":
+        payload, usage, status = call_openai_json_langchain(system_prompt, user_payload, max_output_tokens)
+        if status == "ok":
+            return payload, usage, status
+        if not status.startswith("langchain_unavailable"):
+            return payload, usage, status
+
+    key_env = str(AI_CONFIG.get("api_key_env", "OPENAI_API_KEY"))
+    api_key = os.getenv(key_env, "").strip()
+    model = str(AI_CONFIG.get("model", "gpt-5-nano"))
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, separators=(",", ":"))},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_completion_tokens": max(100, int(max_output_tokens)),
+    }
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
+            timeout=max(5, int(safe_float(AI_CONFIG.get("timeout_seconds"), 30))),
+        )
+        if not (200 <= resp.status_code < 300):
+            return {}, {"input_tokens": 0, "output_tokens": 0}, f"openai_http_{resp.status_code}:{resp.text[:300]}"
+        data = resp.json()
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        content = ""
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        if choices:
+            content = str(choices[0].get("message", {}).get("content", ""))
+        return extract_json_object(content), {
+            "input_tokens": int(safe_float(usage.get("prompt_tokens"), 0)),
+            "output_tokens": int(safe_float(usage.get("completion_tokens"), 0)),
+        }, "ok"
+    except Exception as exc:
+        return {}, {"input_tokens": 0, "output_tokens": 0}, f"openai_error:{exc}"
+
+
+def call_openai_json_langchain(system_prompt: str, user_payload: dict[str, Any], max_output_tokens: int) -> tuple[dict[str, Any], dict[str, int], str]:
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from langchain_openai import ChatOpenAI
+    except Exception as exc:
+        return {}, {"input_tokens": 0, "output_tokens": 0}, f"langchain_unavailable:{exc}"
+
+    key_env = str(AI_CONFIG.get("api_key_env", "OPENAI_API_KEY"))
+    api_key = os.getenv(key_env, "").strip()
+    try:
+        llm = ChatOpenAI(
+            model=str(AI_CONFIG.get("model", "gpt-5-nano")),
+            api_key=api_key,
+            timeout=max(5, int(safe_float(AI_CONFIG.get("timeout_seconds"), 30))),
+            max_tokens=max(100, int(max_output_tokens)),
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+        msg = llm.invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=json.dumps(user_payload, separators=(",", ":"))),
+            ]
+        )
+        content = str(getattr(msg, "content", ""))
+        usage_meta = getattr(msg, "usage_metadata", {}) or {}
+        response_meta = getattr(msg, "response_metadata", {}) or {}
+        token_usage = response_meta.get("token_usage", {}) if isinstance(response_meta, dict) else {}
+        input_tokens = int(safe_float(usage_meta.get("input_tokens"), safe_float(token_usage.get("prompt_tokens"), 0)))
+        output_tokens = int(safe_float(usage_meta.get("output_tokens"), safe_float(token_usage.get("completion_tokens"), 0)))
+        return extract_json_object(content), {"input_tokens": input_tokens, "output_tokens": output_tokens}, "ok"
+    except Exception as exc:
+        return {}, {"input_tokens": 0, "output_tokens": 0}, f"langchain_error:{exc}"
+
+
+def apply_ai_decisions(top10: pd.DataFrame, ai_payload: dict[str, Any]) -> pd.DataFrame:
+    out = top10.copy()
+    for col, default in (
+        ("ai_action", ""),
+        ("ai_confidence", 0.0),
+        ("ai_risk_level", ""),
+        ("ai_score_adjustment", 0.0),
+        ("ai_reason", ""),
+    ):
+        if col not in out.columns:
+            out[col] = default
+    decisions = ai_payload.get("decisions", [])
+    if not isinstance(decisions, list):
+        return out
+    by_symbol = {str(d.get("symbol", "")).upper(): d for d in decisions if isinstance(d, dict)}
+    mode = str(AI_CONFIG.get("decision_mode", "advisory")).lower()
+    allow_upgrades = bool(AI_CONFIG.get("allow_action_upgrades", False))
+    valid_actions = {"BUY_STOCK", "SELL_SHORT", "HOLD"}
+    for idx, row in out.iterrows():
+        sym = str(row.get("symbol", "")).upper()
+        decision = by_symbol.get(sym)
+        if not decision:
+            continue
+        ai_action = str(decision.get("action_stock", "")).upper()
+        if ai_action not in valid_actions:
+            ai_action = ""
+        out.at[idx, "ai_action"] = ai_action
+        out.at[idx, "ai_confidence"] = round(clamp(safe_float(decision.get("confidence"), 0.0), 0.0, 1.0), 4)
+        out.at[idx, "ai_risk_level"] = str(decision.get("risk_level", ""))[:20]
+        out.at[idx, "ai_score_adjustment"] = round(clamp(safe_float(decision.get("score_adjustment"), 0.0), -0.25, 0.25), 4)
+        out.at[idx, "ai_reason"] = str(decision.get("reason", ""))[:240]
+        if mode != "advisory" and ai_action:
+            current = str(row.get("action_stock", "HOLD"))
+            if ai_action == "HOLD" or allow_upgrades or current in {"BUY_STOCK", "SELL_SHORT"}:
+                out.at[idx, "action_stock"] = ai_action
+                if ai_action == "HOLD":
+                    out.at[idx, "action_option"] = "NO_OPTION"
+    return add_instruction_columns(out)
+
+
+def run_ai_trade_advisor(base_dir: Path, ts: str, top10: pd.DataFrame, market_ctx: dict[str, Any], budget_plan: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
+    enabled, reason = ai_enabled()
+    status = {
+        "agent_name": AGENT_NAME,
+        "timestamp_utc": ts,
+        "enabled": enabled,
+        "status": reason,
+        "model": str(AI_CONFIG.get("model", "")),
+        "framework": str(AI_CONFIG.get("framework", "langchain")),
+        "decision_mode": str(AI_CONFIG.get("decision_mode", "advisory")),
+        "decisions": [],
+    }
+    ai_dir = base_dir / "ai"
+    ai_dir.mkdir(parents=True, exist_ok=True)
+    if not enabled:
+        (ai_dir / f"decision_{ts}.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return top10, status
+    budget = ai_budget_status(base_dir)
+    status.update({"budget_spent_usd": round(budget["spent"], 6), "monthly_budget_usd": budget["budget"], "calls_today": budget["calls_today"]})
+    if not budget["allowed"]:
+        status["status"] = "budget_or_daily_limit_reached"
+        (ai_dir / f"decision_{ts}.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return top10, status
+
+    review_n = max(1, min(10, int(safe_float(AI_CONFIG.get("review_top_n"), 5))))
+    candidates = [compact_ai_candidate(r) for _, r in top10.head(review_n).iterrows()]
+    system = (
+        "You are a conservative trading risk advisor. Review only the supplied quantitative scanner output. "
+        "Do not invent external facts. Return JSON only with keys summary, decisions, improvement_notes. "
+        "Each decision must include symbol, action_stock BUY_STOCK/SELL_SHORT/HOLD, confidence 0..1, "
+        "risk_level low/medium/high, score_adjustment -0.25..0.25, and reason under 25 words. "
+        "Prefer HOLD when evidence is mixed, risk/reward is weak, or position sizing is zero."
+    )
+    payload = {
+        "market": {
+            "regime": market_ctx.get("regime"),
+            "session": market_ctx.get("market_session"),
+            "market_trend_score": market_ctx.get("market_trend_score"),
+        },
+        "budget": {
+            "deployable_budget": budget_plan.get("deployable_budget"),
+            "capped_recommended": budget_plan.get("capped_recommended"),
+            "drawdown_pct": budget_plan.get("drawdown_pct"),
+            "budget_regime": budget_plan.get("budget_regime"),
+        },
+        "candidates": candidates,
+    }
+    ai_payload, token_usage, call_status = call_openai_json(system, payload, int(safe_float(AI_CONFIG.get("max_output_tokens"), 900)))
+    status["status"] = call_status
+    status["usage"] = token_usage
+    if call_status == "ok":
+        usage = record_ai_usage(base_dir, token_usage.get("input_tokens", 0), token_usage.get("output_tokens", 0))
+        status["month_usage"] = usage
+        status["summary"] = str(ai_payload.get("summary", ""))[:500]
+        status["decisions"] = ai_payload.get("decisions", []) if isinstance(ai_payload.get("decisions"), list) else []
+        status["improvement_notes"] = ai_payload.get("improvement_notes", []) if isinstance(ai_payload.get("improvement_notes"), list) else []
+        top10 = apply_ai_decisions(top10, status)
+    (ai_dir / f"decision_{ts}.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    (base_dir / "latest").mkdir(parents=True, exist_ok=True)
+    (base_dir / "latest" / "ai_decision.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    return top10, status
 
 
 def find_last_available_snapshot(base_dir: Path) -> tuple[Path | None, Path | None]:
@@ -2095,6 +2502,7 @@ def build_budget_controls(
         "effective_max_stock_alloc_pct": round(effective_max_stock_alloc_pct * 100.0, 4),
         "effective_max_option_alloc_pct": round(effective_max_option_alloc_pct * 100.0, 4),
         "effective_target_exposure_pct": round(effective_target_exposure_pct * 100.0, 4),
+        "effective_max_category_exposure_pct": round(clamp(safe_float(TRADING_CONFIG.get("max_category_exposure_pct"), 0.35), 0.1, 1.0) * 100.0, 4),
         "effective_max_open_positions": effective_max_open_positions,
         "reserve_cash_pct": round(reserve_cash_pct * 100.0, 4),
     }
@@ -2539,6 +2947,67 @@ def build_daily_evaluation_report(base_dir: Path, run_ts: str) -> Path:
     return report_path
 
 
+def run_ai_daily_improvement(base_dir: Path, report_path: Path, run_ts: str) -> Path | None:
+    if not bool(AI_CONFIG.get("daily_improvement_enabled", True)):
+        return None
+    enabled, reason = ai_enabled()
+    latest_dir = base_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    out_path = latest_dir / "ai_daily_improvement.json"
+    status: dict[str, Any] = {
+        "agent_name": AGENT_NAME,
+        "timestamp_utc": run_ts,
+        "enabled": enabled,
+        "status": reason,
+        "model": str(AI_CONFIG.get("model", "")),
+        "framework": str(AI_CONFIG.get("framework", "langchain")),
+    }
+    if not enabled:
+        out_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return out_path
+    budget = ai_budget_status(base_dir)
+    if not budget["allowed"]:
+        status["status"] = "budget_or_daily_limit_reached"
+        status["budget_spent_usd"] = round(budget["spent"], 6)
+        status["monthly_budget_usd"] = budget["budget"]
+        out_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return out_path
+    try:
+        report_text = report_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        status["status"] = f"read_error:{exc}"
+        out_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return out_path
+    report_excerpt = report_text[:12000]
+    system = (
+        "You are a trading-system evaluator. Use only the supplied daily evaluation report. "
+        "Return JSON only with keys backtest_summary, risks_seen, next_run_improvements. "
+        "next_run_improvements must be 3 to 6 concrete rule/config improvements, not live-trading guarantees."
+    )
+    payload = {"daily_evaluation_report": report_excerpt}
+    ai_payload, token_usage, call_status = call_openai_json(system, payload, int(safe_float(AI_CONFIG.get("max_output_tokens"), 900)))
+    status["status"] = call_status
+    status["usage"] = token_usage
+    if call_status == "ok":
+        status.update(ai_payload)
+        status["month_usage"] = record_ai_usage(base_dir, token_usage.get("input_tokens", 0), token_usage.get("output_tokens", 0))
+        lines = report_text.splitlines()
+        lines.extend(["", "## AI Improvement Review"])
+        summary = str(status.get("backtest_summary", "")).strip()
+        if summary:
+            lines.append(f"- Summary: {summary}")
+        improvements = status.get("next_run_improvements", [])
+        if isinstance(improvements, list) and improvements:
+            for idx, item in enumerate(improvements, start=1):
+                lines.append(f"{idx}. {str(item)}")
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+    out_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    history_path = base_dir / "history" / f"ai_daily_improvement_{run_ts}.json"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    return out_path
+
+
 def write_portfolio_report(base_dir: Path, summary: dict[str, Any], open_positions: list[dict[str, Any]], enable_after_hours: bool) -> None:
     latest_dir = base_dir / "latest"
     latest_dir.mkdir(parents=True, exist_ok=True)
@@ -2851,6 +3320,7 @@ def build_new_position(
     return {
         "id": f"{symbol}_{instrument}_{run_count}",
         "symbol": symbol,
+        "category": str(row.get("category", "Unknown") or "Unknown"),
         "instrument": instrument,
         "direction": direction,
         "leverage": leverage,
@@ -2934,6 +3404,14 @@ def update_portfolio(
     target_exposure_pct = safe_float(budget_controls.get("effective_target_exposure_pct"), MAX_PORTFOLIO_EXPOSURE_PCT * 100.0) / 100.0
     max_open_positions = int(budget_controls.get("effective_max_open_positions", 20 if full_deploy else MAX_OPEN_POSITIONS))
     current_exposure_cap = equity * target_exposure_pct
+    max_category_exposure = equity * clamp(safe_float(TRADING_CONFIG.get("max_category_exposure_pct"), 0.35), 0.1, 1.0)
+
+    def category_exposure(category: str) -> float:
+        return sum(
+            mark_position_value(p, position_price_for_mark(p, enable_after_hours)[0])
+            for p in open_positions
+            if str(p.get("category", "Unknown")) == category
+        )
 
     used_symbols = {str(p.get("symbol")) for p in open_positions}
     if full_deploy:
@@ -2966,11 +3444,13 @@ def update_portfolio(
             remaining_slots = max(0, remaining_slots - 1)
             if pos is None:
                 continue
+            category = str(pos.get("category", "Unknown"))
             # Distribute cash across remaining actionable picks to approach full deployment.
             slots_divisor = max(1, remaining_slots + 1)
             planned_alloc = cash / slots_divisor
             room = max(0.0, current_exposure_cap - open_value)
-            alloc = min(max(100.0, planned_alloc), cash, room)
+            category_room = max(0.0, max_category_exposure - category_exposure(category))
+            alloc = min(max(100.0, planned_alloc), cash, room, category_room)
             if alloc < 100:
                 continue
             pos["capital_allocated"] = round(alloc, 4)
@@ -3011,7 +3491,10 @@ def update_portfolio(
                 room = max(0.0, current_exposure_cap - open_value)
                 if room < 100:
                     break
+                category = str(pos0.get("category", "Unknown"))
+                category_room = max(0.0, max_category_exposure - category_exposure(category))
                 alloc = min(cash / remaining_targets, cash, room)
+                alloc = min(alloc, category_room)
                 if alloc < 100:
                     remaining_targets -= 1
                     continue
@@ -3058,6 +3541,9 @@ def update_portfolio(
                 if pos is None:
                     continue
                 alloc = safe_float(pos.get("capital_allocated"), 0.0)
+                category = str(pos.get("category", "Unknown"))
+                if category_exposure(category) + alloc > max_category_exposure:
+                    continue
                 if open_value + alloc > current_exposure_cap:
                     continue
                 cash -= alloc
@@ -3198,12 +3684,38 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
             else -safe_float(r.get("total_score"), 0.0),
             axis=1,
         )
-        top10 = actionable.sort_values("edge_score", ascending=False).head(10).drop(columns=["edge_score"], errors="ignore")
+        top10 = diversify_ranked_picks(actionable.sort_values("edge_score", ascending=False), 10).drop(columns=["edge_score"], errors="ignore")
         if len(top10) < 10:
             fill = all_df.loc[~all_df["symbol"].isin(set(top10["symbol"]))].head(10 - len(top10))
             top10 = pd.concat([top10, fill], ignore_index=True)
     else:
-        top10 = all_df.head(10).copy()
+        top10 = diversify_ranked_picks(all_df, 10)
+
+    pre_state = load_portfolio_state(base_dir)
+    pre_equity = safe_float(pre_state.get("paper_balance"), safe_float(pre_state.get("equity"), INITIAL_CAPITAL))
+    pre_peak = max(safe_float(pre_state.get("peak_paper_balance"), pre_equity), pre_equity)
+    pre_controls = build_budget_controls(
+        pre_equity,
+        INITIAL_CAPITAL,
+        pre_peak,
+        bool(TRADING_CONFIG.get("full_budget_deploy", False)),
+        clamp(safe_float(TRADING_CONFIG.get("full_deploy_target_pct"), 1.0), 0.6, 1.0),
+    )
+    top10 = add_sizing_columns(top10, pre_equity, pre_controls)
+    top10 = add_instruction_columns(top10)
+    pre_budget_plan = build_budget_plan(
+        top10,
+        pre_equity,
+        pre_equity,
+        INITIAL_CAPITAL,
+        pre_controls,
+        safe_float(pre_state.get("cash"), pre_equity),
+        max(0.0, pre_equity - safe_float(pre_state.get("cash"), pre_equity)),
+    )
+    top10, ai_summary = run_ai_trade_advisor(base_dir, ts, top10, market_ctx, pre_budget_plan)
+    top10 = add_sizing_columns(top10, pre_equity, pre_controls)
+    top10 = add_instruction_columns(top10)
+
     alert_summary = process_notifications(base_dir, ts, top10, market_ctx)
     (run_dir / "alerts.json").write_text(json.dumps(alert_summary, indent=2), encoding="utf-8")
     portfolio_summary = update_portfolio(
@@ -3230,9 +3742,11 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
     )
 
     md_lines = [
-        f"# Top 10 Picks ({format_run_ts_pt(ts)})",
+        f"# {AGENT_NAME} Top 10 Picks ({format_run_ts_pt(ts)})",
         "",
+        f"Agent: **{AGENT_NAME}**",
         f"Market regime: **{market_ctx.get('regime', 'unknown')}**",
+        f"Universe mode: **{market_ctx.get('universe_mode', 'unknown')}**",
         f"Market session: **{market_ctx.get('market_session', 'unknown')}** "
         f"(`open={market_ctx.get('market_open', False)}`; PT {market_ctx.get('market_time_pt', '')})",
         f"Price reference: `{market_ctx.get('price_reference_mode', '')}` "
@@ -3274,18 +3788,42 @@ def save_run(base_dir: Path, rows: list[AnalysisRow], market_ctx: dict[str, Any]
         f"- Alert reason: `{alert_summary.get('reason', '')}`",
         f"- Alert candidates: `{len(alert_summary.get('items', []))}`",
         "",
-        "| Rank | Symbol | Strategy | Price | Score | Stock Qty | Option Ctr | E Days | E Score | Stock Action | Option Action | Exec | Option Hint | Entry | Target | Stop | R:R | Why |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---:|---:|---:|---:|---|",
+        "## AI Advisor",
+        f"- Enabled: `{ai_summary.get('enabled', False)}`",
+        f"- Status: `{ai_summary.get('status', '')}`",
+        f"- Model: `{ai_summary.get('model', '')}`",
+        f"- Decision mode: `{ai_summary.get('decision_mode', 'advisory')}`",
+        f"- Monthly spend estimate: `${safe_float(ai_summary.get('month_usage', {}).get('estimated_cost_usd'), safe_float(ai_summary.get('budget_spent_usd'), 0.0)):.4f}` / `${safe_float(ai_summary.get('monthly_budget_usd'), safe_float(AI_CONFIG.get('monthly_budget_usd'), 5.0)):.2f}`",
+        f"- Summary: {ai_summary.get('summary', '') or 'No AI review applied.'}",
+        "",
+        "| Rank | Symbol | Category | Strategy | Price | Score | Stock Qty | Option Ctr | E Days | E Score | Stock Action | Option Action | Exec | Option Hint | Entry | Target | Stop | R:R | Why |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---:|---:|---:|---:|---|",
     ]
     for idx, row in top10.reset_index(drop=True).iterrows():
         md_lines.append(
-            f"| {idx+1} | {row['symbol']} | {row.get('strategy_bucket','DAILY_TRADING')} | {row['price']:.2f} | {row['total_score']:.3f} | "
+            f"| {idx+1} | {row['symbol']} | {row.get('category','Unknown')} | {row.get('strategy_bucket','DAILY_TRADING')} | {row['price']:.2f} | {row['total_score']:.3f} | "
             f"{int(safe_float(row.get('stock_qty'), 0))} | {int(safe_float(row.get('option_contracts'), 0))} | "
             f"{int(safe_float(row.get('upcoming_earnings_days'), -1))} | {safe_float(row.get('earnings_event_score'), 0.0):.2f} | "
             f"{row['action_stock']} | {row['action_option']} | {row['execution_timing']} | {row['option_symbol_hint']} | "
             f"{row['entry_price']:.2f} | {row['target_price']:.2f} | {row['stop_price']:.2f} | {row['risk_reward']:.2f} | "
             f"{row['brief_reason']} |"
         )
+    if any(str(v).strip() for v in top10.get("ai_action", pd.Series(dtype=str)).tolist()):
+        md_lines.extend(
+            [
+                "",
+                "## AI Reviewed Picks",
+                "| Symbol | AI Action | Confidence | Risk | Adjustment | AI Reason |",
+                "|---|---|---:|---|---:|---|",
+            ]
+        )
+        for _, row in top10.head(max(1, int(safe_float(AI_CONFIG.get("review_top_n"), 5)))).iterrows():
+            if not str(row.get("ai_action", "")).strip():
+                continue
+            md_lines.append(
+                f"| {row.get('symbol','')} | {row.get('ai_action','')} | {safe_float(row.get('ai_confidence'), 0.0):.2f} | "
+                f"{row.get('ai_risk_level','')} | {safe_float(row.get('ai_score_adjustment'), 0.0):.2f} | {row.get('ai_reason','')} |"
+            )
     md_lines.extend(
         [
             "",
@@ -3592,6 +4130,32 @@ def add_instruction_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def diversify_ranked_picks(df: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
+    if df.empty or "category" not in df.columns:
+        return df.head(limit).copy()
+    max_weight = clamp(safe_float(UNIVERSE_CONFIG.get("max_category_weight"), safe_float(TRADING_CONFIG.get("max_category_exposure_pct"), 0.35)), 0.1, 1.0)
+    max_per_category = max(1, int(round(limit * max_weight)))
+    selected = []
+    category_counts: dict[str, int] = {}
+    for _, row in df.iterrows():
+        category = str(row.get("category", "Unknown") or "Unknown")
+        if category_counts.get(category, 0) >= max_per_category:
+            continue
+        selected.append(row)
+        category_counts[category] = category_counts.get(category, 0) + 1
+        if len(selected) >= limit:
+            break
+    if len(selected) < min(limit, len(df)):
+        selected_symbols = {str(r.get("symbol", "")) for r in selected}
+        for _, row in df.iterrows():
+            if str(row.get("symbol", "")) in selected_symbols:
+                continue
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+    return pd.DataFrame(selected).reset_index(drop=True)
+
+
 def classify_strategy_bucket(row: pd.Series) -> str:
     action = str(row.get("action_stock", "HOLD"))
     days = int(safe_float(row.get("upcoming_earnings_days"), -1))
@@ -3657,22 +4221,18 @@ def run_once(base_dir: Path, universe_count: int, enable_after_hours: bool) -> P
     adaptation_summary = post_analyze_and_adapt(base_dir, params, enable_after_hours)
     save_post_analysis(base_dir, adaptation_summary)
     mkt = market_hours_context()
-    if str(mkt.get("market_session", "")) == "weekend":
-        symbols = STABLE_UNIVERSE[: max(10, universe_count)]
-    else:
-        symbols = fetch_market_movers(
-            universe_count,
-            bool(TRADING_CONFIG.get("include_downtrend_symbols", True)),
-            safe_float(TRADING_CONFIG.get("downtrend_symbol_ratio", 0.4), 0.4),
-        )
+    symbols, universe_mode = select_universe_symbols(universe_count, str(mkt.get("market_session", "")))
     regime, ctx = market_regime()
     mkt_score = market_trend_score(regime, ctx)
     category_ctx = build_category_context()
     market_ctx = {
+        "agent_name": AGENT_NAME,
         "regime": regime,
         **ctx,
         **mkt,
         "universe_count": len(symbols),
+        "universe_mode": universe_mode,
+        "universe_config": UNIVERSE_CONFIG,
         "model_params_file": str(MODEL_STATE_PATH),
         "enable_after_hours": bool(enable_after_hours),
         "analysis_order": [
@@ -3753,6 +4313,7 @@ def analyze_single_symbol(
             return None, {"status": "no_history"}
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
         info = safe_ticker_info(ticker)
+        category = str(info.get("sector") or info.get("category") or info.get("quoteType") or "Unknown")
         news_items = safe_ticker_news(ticker)
 
         gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
@@ -3803,6 +4364,7 @@ def analyze_single_symbol(
 
         row = AnalysisRow(
             symbol=symbol,
+            category=category,
             price=round(price, 4),
             market_regime=regime,
             fundamental_score=round(fund, 4),
@@ -4029,6 +4591,7 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         pd.DataFrame(
             columns=[
                 "symbol",
+                "category",
                 "price",
                 "market_regime",
                 "fundamental_score",
@@ -4059,6 +4622,9 @@ def write_stale_snapshot(base_dir: Path, error_message: str) -> Path:
         stale_top10 = pd.DataFrame()
     stale_changed = False
     if not stale_top10.empty:
+        if "category" not in stale_top10.columns:
+            stale_top10["category"] = "Unknown"
+            stale_changed = True
         if "upcoming_earnings_days" not in stale_top10.columns:
             stale_top10["upcoming_earnings_days"] = -1
             stale_changed = True
@@ -4232,6 +4798,7 @@ def run_daily_evaluation_only(base_dir: Path) -> Path:
 
     generate_daily_summary(base_dir, ts, force=True)
     report_path = build_daily_evaluation_report(base_dir, ts)
+    ai_improvement_path = run_ai_daily_improvement(base_dir, report_path, ts)
     mkt = market_hours_context()
     status = {
         "timestamp_utc": ts,
@@ -4240,6 +4807,7 @@ def run_daily_evaluation_only(base_dir: Path) -> Path:
         "market_session": mkt.get("market_session"),
         "daily_summary": str(latest_dir / "daily_summary.md"),
         "daily_evaluation_report": str(report_path),
+        "ai_daily_improvement": str(ai_improvement_path) if ai_improvement_path else "",
     }
     market_context = {
         "regime": "daily_evaluation_only",
@@ -4257,7 +4825,7 @@ def run_daily_evaluation_only(base_dir: Path) -> Path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Automated Yahoo-based stock/options analysis")
+    parser = argparse.ArgumentParser(description=f"{AGENT_NAME}: Yahoo/OpenAI/LangChain assisted stock and ETF recommendation agent")
     parser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR), help="Output folder for run snapshots")
     parser.add_argument("--universe-count", type=int, default=50, help="Number of top market movers (gainers+losers) to analyze")
     parser.add_argument("--symbol", default="", help="Single stock symbol summary mode (e.g., AAPL).")
@@ -4301,11 +4869,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     global NEWS_CONFIG, TRADING_CONFIG, INITIAL_CAPITAL, REAL_TRADING_CAPITAL
-    global NOTIFICATIONS_CONFIG
+    global NOTIFICATIONS_CONFIG, AI_CONFIG, UNIVERSE_CONFIG
     unified = load_agent_config(Path(args.config))
     NEWS_CONFIG = dict(unified.get("news", DEFAULT_NEWS_CONFIG))
     NOTIFICATIONS_CONFIG = dict(unified.get("notifications", DEFAULT_NOTIFICATIONS_CONFIG))
     TRADING_CONFIG = dict(unified.get("trading", DEFAULT_TRADING_CONFIG))
+    AI_CONFIG = dict(unified.get("ai", DEFAULT_AI_CONFIG))
+    UNIVERSE_CONFIG = dict(unified.get("universe", DEFAULT_UNIVERSE_CONFIG))
     # Backward compatibility for older config keys.
     sim_cap = safe_float(
         TRADING_CONFIG.get(

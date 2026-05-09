@@ -1,0 +1,41 @@
+{
+  "timestamp_utc": "20260508_144909",
+  "enabled": true,
+  "channel": "telegram",
+  "telegram_enabled": true,
+  "sent": false,
+  "reason": "missing_telegram_env",
+  "telegram_chat_id": "",
+  "items": [
+    {
+      "symbol": "GOOGL",
+      "score": 1.117,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 399.42,
+      "target": 420.01,
+      "stop": 387.07,
+      "rr": 1.67
+    },
+    {
+      "symbol": "SMH",
+      "score": 0.808,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 556.28,
+      "target": 587.38,
+      "stop": 537.62,
+      "rr": 1.67
+    },
+    {
+      "symbol": "AAPL",
+      "score": 0.763,
+      "stock_action": "BUY_STOCK",
+      "option_action": "NO_OPTION",
+      "entry": 293.31,
+      "target": 307.13,
+      "stop": 285.02,
+      "rr": 1.67
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+timestamp_utc,event,symbol,instrument,direction,entry_price,exit_price,capital_allocated,value,pnl,reason,hold_runs
+20260508_135200,OPEN,GOOGL,STOCK,LONG,398.6106,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,CAT,STOCK,LONG,907.7984,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,SMH,STOCK,LONG,554.6012,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,AMZN,STOCK,LONG,271.9517,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,AAPL,STOCK,LONG,292.7391,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,UNH,STOCK,LONG,371.6018,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,PANW,STOCK,LONG,194.2256,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,XLK,STOCK,LONG,172.2916,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,QQQ,STOCK,LONG,701.8581,,1000.0,1000.0,0.0,signal_open_full_budget,0
+20260508_135200,OPEN,IWM,STOCK,LONG,282.3105,,974.6321,974.6321,0.0,signal_open_full_budget,0
