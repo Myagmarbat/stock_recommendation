@@ -208,7 +208,7 @@ The default provider is OpenAI through `langchain-openai`, with `framework` set 
 
 The AI layer is an advisor, not the primary trading engine. Python computes the candidates, sizing, stops, targets, and budget controls first. The LangChain advisor reviews that structured payload and returns JSON review fields. In the default `advisory` mode, those fields are written into reports without changing trade actions.
 
-Recommended low-cost setup, capped below `$1/month`:
+Recommended low-cost setup, capped at `$3/month`:
 
 ```bash
 cp .env.example .env
@@ -224,9 +224,9 @@ Then set:
   "framework": "langchain",
   "model": "gpt-5-nano",
   "api_key_env": "OPENAI_API_KEY",
-  "monthly_budget_usd": 0.95,
+  "monthly_budget_usd": 3.00,
   "review_top_n": 5,
-  "max_runs_per_day": 2,
+  "max_runs_per_day": 6,
   "max_output_tokens": 600,
   "decision_mode": "advisory"
 }
@@ -241,6 +241,18 @@ AI outputs:
 The default `advisory` mode adds AI review fields and report sections without changing the scanner's trade actions.
 Use `decision_mode` other than `advisory` only after paper-testing, because then AI `HOLD` decisions can downgrade a candidate before alerts and paper-trading updates.
 Cost control is enforced with `monthly_budget_usd`, `max_runs_per_day`, and `review_top_n`.
+
+For a one-off LangSmith trace test, source `.env` and run with tracing enabled:
+
+```bash
+set -a
+source .env
+set +a
+LANGSMITH_TRACING=true \
+LANGSMITH_PROJECT=stock_recommendation \
+LANGCHAIN_CALLBACKS_BACKGROUND=false \
+python stock_option_agent/agent.py --base-dir ./data/llm_trace_test --universe-count 10 --config ./config/agent_config.json
+```
 
 Different agent profiles can use different config files. Create profile files by copying the base config:
 
@@ -306,7 +318,7 @@ Enable OpenAI summary/review only:
 ```bash
 export OPENAI_API_KEY="sk-..."
 export STOCK_RECOMMENDATION_MODEL="gpt-5-nano"
-export STOCK_RECOMMENDATION_AI_MONTHLY_BUDGET_USD=0.95
+export STOCK_RECOMMENDATION_AI_MONTHLY_BUDGET_USD=3.00
 export STOCK_RECOMMENDATION_AI_MAX_OUTPUT_TOKENS=600
 ```
 
@@ -546,11 +558,11 @@ With the default AI config in `config/agent_config.json`, AI is enabled when `OP
 When enabled:
 - A regular scan can make at most one AI advisor call after the deterministic top picks are built.
 - The final `1:05 PM` daily evaluation can make one additional AI improvement call when `daily_improvement_enabled` is `true`.
-- `max_runs_per_day` defaults to `2`, so the scanner will stop making AI calls after 2 successful AI calls in a UTC day even though cron/launchd continues running the deterministic scanner every 5 minutes.
-- `monthly_budget_usd` defaults to `$0.95`; once tracked estimated spend reaches that value, later AI calls are skipped.
+- `max_runs_per_day` defaults to `6`, so the scanner will stop making AI calls after 6 successful AI calls in a UTC day even though cron/launchd continues running the deterministic scanner every 5 minutes.
+- `monthly_budget_usd` defaults to `$3.00`; once tracked estimated spend reaches that value, later AI calls are skipped.
 - Cost is estimated from actual token usage and the configured prices: `input_price_per_million = 0.05`, `output_price_per_million = 0.40`.
 
-The 06:30-13:00 weekday schedule creates about 78 regular scan opportunities per trading day, plus one evaluation pass. With defaults, AI usage is capped to 2 calls/day, not 79 calls/day. At the configured `gpt-5-nano` rates, the hard `$0.95/month` budget cap prevents the app from continuing AI calls after the configured monthly budget is reached.
+The 06:30-13:00 weekday schedule creates about 78 regular scan opportunities per trading day, plus one evaluation pass. With defaults, AI usage is capped to 6 calls/day, not 79 calls/day. At the configured `gpt-5-nano` rates, the hard `$3.00/month` budget cap prevents the app from continuing AI calls after the configured monthly budget is reached.
 
 ## Windows Task Scheduler
 
