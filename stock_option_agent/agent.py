@@ -284,6 +284,8 @@ STABLE_UNIVERSE = [
     "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLI", "XBI", "SMH", "TLT", "GLD",
 ]
 
+ETF_SYMBOLS = {"SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLI", "XBI", "SMH", "TLT", "GLD"}
+
 DEFAULT_TRADING_CONFIG = {
     "stock_only": True,
     "allow_shorting": True,
@@ -840,7 +842,7 @@ def stable_symbol_score(symbol: str) -> tuple[str, float, str]:
         hist = ticker.history(period="1y", interval="1d", auto_adjust=False)
         if len(hist) < 80:
             return symbol, -999.0, ""
-        info = safe_ticker_info(ticker)
+        info = safe_ticker_info(ticker, symbol, hist)
         quote_type = str(info.get("quoteType", "")).upper()
         sector = str(info.get("sector") or info.get("category") or quote_type or "Unknown")
         close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
@@ -868,7 +870,7 @@ def fetch_stable_symbols(count: int = 50) -> list[str]:
     include_etfs = bool(UNIVERSE_CONFIG.get("include_etfs", True))
     pool = list(dict.fromkeys(STABLE_UNIVERSE + FALLBACK_UNIVERSE))
     if not include_etfs:
-        pool = [s for s in pool if s not in {"SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLI", "XBI", "SMH", "TLT", "GLD"}]
+        pool = [s for s in pool if s not in ETF_SYMBOLS]
     max_scored = max(count, int(safe_float(UNIVERSE_CONFIG.get("max_symbols_scored"), 80)))
     scored = [stable_symbol_score(sym) for sym in pool[:max_scored]]
     scored = [item for item in scored if item[1] > -100]
@@ -973,7 +975,10 @@ def market_trend_score(regime: str, ctx: dict[str, Any]) -> float:
     return round(clamp(0.6 * base + 0.4 * momentum, -1, 1), 4)
 
 
-def next_earnings_days(ticker: yf.Ticker, info: dict[str, Any]) -> int:
+def next_earnings_days(ticker: yf.Ticker, info: dict[str, Any], symbol: str = "") -> int:
+    if is_known_etf_symbol(symbol) or is_etf_like(info):
+        return -1
+
     now_ts = now_utc().timestamp()
     candidates: list[float] = []
 
@@ -1124,6 +1129,10 @@ def category_trend_score(info: dict[str, Any], category_ctx: dict[str, float]) -
     oil_component = oil_ret if sector == "Energy" else 0.0
     raw = 0.65 * sector_ret + 0.25 * world_ret + 0.10 * oil_component
     return round(clamp(raw / 0.08, -1, 1), 4)
+
+
+def is_known_etf_symbol(symbol: str) -> bool:
+    return symbol.upper().strip() in ETF_SYMBOLS
 
 
 def is_etf_like(info: dict[str, Any]) -> bool:
@@ -1631,7 +1640,24 @@ def latest_trade_price(ticker: yf.Ticker, daily_hist: pd.DataFrame, enable_after
     return safe_float(daily_hist["Close"].iloc[-1], 0.0)
 
 
-def safe_ticker_info(ticker: yf.Ticker) -> dict[str, Any]:
+def etf_info_from_history(symbol: str, hist: pd.DataFrame | None = None) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "symbol": symbol.upper().strip(),
+        "quoteType": "ETF",
+        "category": "ETF",
+        "sector": "ETF",
+        "fundFamily": "Unknown",
+    }
+    if hist is not None and not hist.empty:
+        volume = pd.to_numeric(hist.get("Volume", pd.Series(dtype=float)), errors="coerce").dropna()
+        if not volume.empty:
+            info["averageVolume"] = safe_float(volume.tail(20).mean(), 0.0)
+    return info
+
+
+def safe_ticker_info(ticker: yf.Ticker, symbol: str = "", hist: pd.DataFrame | None = None) -> dict[str, Any]:
+    if symbol and is_known_etf_symbol(symbol):
+        return etf_info_from_history(symbol, hist)
     try:
         info = ticker.info or {}
         return info if isinstance(info, dict) else {}
@@ -1662,7 +1688,7 @@ def analyze_symbol(
         if hist.empty:
             return None
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
-        info = safe_ticker_info(ticker)
+        info = safe_ticker_info(ticker, symbol, hist)
         category = str(info.get("sector") or info.get("category") or info.get("quoteType") or "Unknown")
         news_items = safe_ticker_news(ticker)
         gate_ok, gate_reason = conservative_gate(symbol, info, hist, price)
@@ -1672,7 +1698,7 @@ def analyze_symbol(
         fund, fund_reason = fundamental_score(info)
         tech, tech_reason = technical_score(hist)
         news, news_reason = news_sentiment(symbol, news_items)
-        earnings_days = next_earnings_days(ticker, info)
+        earnings_days = next_earnings_days(ticker, info, symbol)
         outlook_score = earnings_outlook_score(info)
         price_score = price_setup_score(hist, price)
         earn_score = earnings_event_score(earnings_days, fund, tech, news, regime, outlook_score, price_score)
@@ -4312,7 +4338,7 @@ def analyze_single_symbol(
         if hist.empty:
             return None, {"status": "no_history"}
         price = latest_trade_price(ticker, hist, enable_after_hours, market_open)
-        info = safe_ticker_info(ticker)
+        info = safe_ticker_info(ticker, symbol, hist)
         category = str(info.get("sector") or info.get("category") or info.get("quoteType") or "Unknown")
         news_items = safe_ticker_news(ticker)
 
@@ -4320,7 +4346,7 @@ def analyze_single_symbol(
         fund, fund_reason = fundamental_score(info)
         tech, tech_reason = technical_score(hist)
         news, news_reason = news_sentiment(symbol, news_items)
-        earnings_days = next_earnings_days(ticker, info)
+        earnings_days = next_earnings_days(ticker, info, symbol)
         outlook_score = earnings_outlook_score(info)
         price_score = price_setup_score(hist, price)
         earn_score = earnings_event_score(earnings_days, fund, tech, news, regime, outlook_score, price_score)
