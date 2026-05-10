@@ -26,6 +26,17 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For local development, install this project as the primary `stock_recommendation`
+agent:
+
+```bash
+pip install -e .
+```
+
+The smaller `python -m stock_recommendation.main` workflow writes its SQLite
+paper-trading state to `data/paper_trades.db` by default. Override that with
+`STOCK_RECOMMENDATION_DATA_DIR` or `STOCK_RECOMMENDATION_DB_PATH` when needed.
+
 Optional local environment file for scheduled runs:
 
 ```bash
@@ -191,13 +202,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_agent.ps1 -EnableAfterHou
 
 ## Optional LangChain AI advisor
 
-The scanner can optionally call a LangChain-backed AI advisor after the deterministic top picks are built.
-This is disabled by default and is cost-capped in `config/agent_config.json` under `ai`.
+The scanner calls a LangChain-backed AI advisor by default after the deterministic top picks are built when `OPENAI_API_KEY` is present.
+This is cost-capped in `config/agent_config.json` under `ai`, and can be disabled with `STOCK_RECOMMENDATION_AI=0` or `"ai.enabled": false`.
 The default provider is OpenAI through `langchain-openai`, with `framework` set to `langchain`.
 
 The AI layer is an advisor, not the primary trading engine. Python computes the candidates, sizing, stops, targets, and budget controls first. The LangChain advisor reviews that structured payload and returns JSON review fields. In the default `advisory` mode, those fields are written into reports without changing trade actions.
 
-Recommended low-cost setup:
+Recommended low-cost setup, capped below `$1/month`:
 
 ```bash
 cp .env.example .env
@@ -213,9 +224,10 @@ Then set:
   "framework": "langchain",
   "model": "gpt-5-nano",
   "api_key_env": "OPENAI_API_KEY",
-  "monthly_budget_usd": 5.0,
+  "monthly_budget_usd": 0.95,
   "review_top_n": 5,
-  "max_runs_per_day": 6,
+  "max_runs_per_day": 2,
+  "max_output_tokens": 600,
   "decision_mode": "advisory"
 }
 ```
@@ -293,11 +305,18 @@ Enable OpenAI summary/review only:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-export STOCK_RECOMMENDATION_AI=1
-export STOCK_RECOMMENDATION_MODEL="gpt-4.1-mini"
+export STOCK_RECOMMENDATION_MODEL="gpt-5-nano"
+export STOCK_RECOMMENDATION_AI_MONTHLY_BUDGET_USD=0.95
+export STOCK_RECOMMENDATION_AI_MAX_OUTPUT_TOKENS=600
 ```
 
 The LLM does not freely decide trades. Python computes the recommendation score from stability, trend, liquidity, fundamentals, news sentiment, and backtest confidence. OpenAI only explains the recommendation, identifies risks, and suggests strategy improvements.
+
+Ask the primary `stock_recommendation` LLM agent directly:
+
+```bash
+python -m stock_recommendation.main --ask-agent "Run the workflow and summarize the top risks"
+```
 
 ## Output
 
@@ -522,16 +541,16 @@ Default cron schedule behavior:
 
 ## AI schedule and cost
 
-With the default AI config in `config/agent_config.json`, AI is disabled unless `ai.enabled` is set to `true` and `OPENAI_API_KEY` is present.
+With the default AI config in `config/agent_config.json`, AI is enabled when `OPENAI_API_KEY` is present. To disable it, set `STOCK_RECOMMENDATION_AI=0` for the smaller workflow or `"ai.enabled": false` in the scanner config.
 
 When enabled:
 - A regular scan can make at most one AI advisor call after the deterministic top picks are built.
 - The final `1:05 PM` daily evaluation can make one additional AI improvement call when `daily_improvement_enabled` is `true`.
-- `max_runs_per_day` defaults to `6`, so the scanner will stop making AI calls after 6 successful AI calls in a UTC day even though cron/launchd continues running the deterministic scanner every 5 minutes.
-- `monthly_budget_usd` defaults to `$5.00`; once tracked estimated spend reaches that value, later AI calls are skipped.
+- `max_runs_per_day` defaults to `2`, so the scanner will stop making AI calls after 2 successful AI calls in a UTC day even though cron/launchd continues running the deterministic scanner every 5 minutes.
+- `monthly_budget_usd` defaults to `$0.95`; once tracked estimated spend reaches that value, later AI calls are skipped.
 - Cost is estimated from actual token usage and the configured prices: `input_price_per_million = 0.05`, `output_price_per_million = 0.40`.
 
-The 06:30-13:00 weekday schedule creates about 78 regular scan opportunities per trading day, plus one evaluation pass. With defaults, AI usage is capped to 6 calls/day, not 79 calls/day. At the configured `gpt-5-nano` rates, 6 small JSON review calls per trading day should normally remain below `$5/month`; the hard budget cap prevents the app from continuing AI calls after the configured monthly budget is reached.
+The 06:30-13:00 weekday schedule creates about 78 regular scan opportunities per trading day, plus one evaluation pass. With defaults, AI usage is capped to 2 calls/day, not 79 calls/day. At the configured `gpt-5-nano` rates, the hard `$0.95/month` budget cap prevents the app from continuing AI calls after the configured monthly budget is reached.
 
 ## Windows Task Scheduler
 

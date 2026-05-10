@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
-from stock_recommendation.config import AGENT_NAME, MONTHLY_OPENAI_BUDGET_USD, ai_enabled, openai_model
+from stock_recommendation.config import AGENT_NAME, MONTHLY_OPENAI_BUDGET_USD, OPENAI_MAX_OUTPUT_TOKENS, ai_enabled, openai_model
 from stock_recommendation.tools.backtest import backtest_strategy
 from stock_recommendation.tools.fundamentals import calculate_fundamentals
 from stock_recommendation.tools.market_data import get_market_data, get_stable_universe
@@ -81,7 +82,11 @@ def ask_openai_for_analysis(recommendations: list[Recommendation]) -> dict:
         for r in recommendations
     ]
     if not ai_enabled():
-        return {"enabled": False, "summary": "OpenAI summary disabled. Set STOCK_RECOMMENDATION_AI=1 and OPENAI_API_KEY to enable.", "budget_usd": MONTHLY_OPENAI_BUDGET_USD}
+        return {
+            "enabled": False,
+            "summary": "OpenAI summary unavailable because OPENAI_API_KEY is not set or STOCK_RECOMMENDATION_AI disables it.",
+            "budget_usd": MONTHLY_OPENAI_BUDGET_USD,
+        }
     if ai_budget_remaining() <= 0:
         return {"enabled": False, "summary": "OpenAI monthly budget reached; skipped AI summary.", "budget_usd": MONTHLY_OPENAI_BUDGET_USD}
 
@@ -93,7 +98,7 @@ def ask_openai_for_analysis(recommendations: list[Recommendation]) -> dict:
         from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        llm = ChatOpenAI(model=openai_model(), temperature=0, max_tokens=700)
+        llm = ChatOpenAI(model=openai_model(), temperature=0, max_tokens=OPENAI_MAX_OUTPUT_TOKENS)
         msg = llm.invoke([SystemMessage(content=prompt), HumanMessage(content=json.dumps(payload))])
         usage = getattr(msg, "usage_metadata", {}) or {}
         ai_usage = record_ai_usage(int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)))
@@ -131,7 +136,37 @@ def run_recommendation_workflow(update_portfolio: bool = True) -> dict:
     }
 
 
+def _format_agent_response(response: Any) -> str:
+    if isinstance(response, dict):
+        messages = response.get("messages")
+        if messages:
+            last = messages[-1]
+            content = getattr(last, "content", None)
+            if content is not None:
+                return str(content)
+        output = response.get("output")
+        if output is not None:
+            return str(output)
+    return str(response)
+
+
+def _record_agent_usage(response: Any) -> dict:
+    totals = {"input_tokens": 0, "output_tokens": 0}
+    if isinstance(response, dict):
+        for message in response.get("messages") or []:
+            usage = getattr(message, "usage_metadata", None) or {}
+            totals["input_tokens"] += int(usage.get("input_tokens", 0) or 0)
+            totals["output_tokens"] += int(usage.get("output_tokens", 0) or 0)
+    if totals["input_tokens"] or totals["output_tokens"]:
+        return record_ai_usage(totals["input_tokens"], totals["output_tokens"])
+    return {"monthly_budget_usd": MONTHLY_OPENAI_BUDGET_USD, "usage_recorded": False}
+
+
 def build_langchain_agent():
+    if not ai_enabled():
+        return {"error": "OpenAI agent unavailable because OPENAI_API_KEY is not set or STOCK_RECOMMENDATION_AI disables it."}
+    if ai_budget_remaining() <= 0:
+        return {"error": "OpenAI monthly budget reached; skipped agent run."}
     try:
         from langchain.agents import tool
         from langchain_openai import ChatOpenAI
@@ -146,15 +181,49 @@ def build_langchain_agent():
             """Run the controlled recommendation workflow."""
             return json.dumps(run_recommendation_workflow(update_portfolio=False))
 
+        @tool
+        def get_ai_budget_status() -> str:
+            """Return the remaining monthly OpenAI budget for this stock_recommendation agent."""
+            return json.dumps({"remaining_usd": round(ai_budget_remaining(), 6), "monthly_budget_usd": MONTHLY_OPENAI_BUDGET_USD})
+
+        tools = [analyze_ticker, run_workflow, get_ai_budget_status]
+        llm = ChatOpenAI(model=openai_model(), temperature=0, max_tokens=OPENAI_MAX_OUTPUT_TOKENS)
+        system_prompt = (
+            "You are stock_recommendation, the primary stock and ETF recommendation agent. "
+            "Use tools for market calculations and budget checks. Do not invent market data, prices, "
+            "portfolio state, or trade actions. Keep answers concise and label deterministic tool output separately "
+            "from any advisory interpretation."
+        )
+
         try:
             from langchain.agents import create_agent
 
             return create_agent(
-                model=ChatOpenAI(model=openai_model(), temperature=0),
-                tools=[analyze_ticker, run_workflow],
-                system_prompt="You are stock_recommendation. Use tools for calculations. Explain only; do not invent trades.",
+                model=llm,
+                tools=tools,
+                system_prompt=system_prompt,
             )
         except Exception:
-            return {"model": ChatOpenAI(model=openai_model(), temperature=0), "tools": [analyze_ticker, run_workflow]}
+            from langchain.agents import AgentType, initialize_agent
+
+            return initialize_agent(
+                tools=tools,
+                llm=llm,
+                agent=AgentType.OPENAI_FUNCTIONS,
+                verbose=False,
+                agent_kwargs={"system_message": system_prompt},
+            )
     except Exception as exc:
         return {"error": f"LangChain unavailable: {exc}"}
+
+
+def run_stock_recommendation_agent(prompt: str) -> str:
+    agent = build_langchain_agent()
+    if isinstance(agent, dict) and "error" in agent:
+        return agent["error"]
+    try:
+        response = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+    except Exception:
+        response = agent.invoke({"input": prompt})
+    _record_agent_usage(response)
+    return _format_agent_response(response)

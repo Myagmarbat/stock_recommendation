@@ -1,0 +1,25 @@
+[project]
+name = "stock-recommendation"
+version = "0.1.0"
+description = "Primary stock and ETF recommendation agent with optional low-cost LLM review."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32.0",
+    "pandas>=2.2.0",
+    "yfinance>=0.2.54",
+    "python-dateutil>=2.9.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+]
+
+[project.scripts]
+stock-recommendation = "stock_recommendation.main:main"
+stock-option-agent = "stock_option_agent.agent:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["stock_recommendation*", "stock_option_agent*"]

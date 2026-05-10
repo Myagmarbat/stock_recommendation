@@ -1,4 +1,12 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .env
+.venv/
+build/
+dist/
+*.egg-info/
 stock_recommendation/data/*.db
+stock_recommendation/data/
+data/daily/
+data/today
+data/logs/
