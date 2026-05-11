@@ -11,11 +11,15 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
+    "faiss-cpu>=1.9.0",
+    "sentence-transformers>=3.0.0",
+    "pypdf>=5.0.0",
 ]
 
 [project.scripts]
 stock-recommendation = "stock_recommendation.main:main"
 stock-option-agent = "stock_option_agent.agent:main"
+stock-rag = "stock_recommendation.rag:main"
 
 [build-system]
 requires = ["setuptools>=68"]

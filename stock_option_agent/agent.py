@@ -1971,7 +1971,9 @@ def call_openai_json_langchain(system_prompt: str, user_payload: dict[str, Any],
             model=str(AI_CONFIG.get("model", "gpt-5-nano")),
             api_key=api_key,
             timeout=max(5, int(safe_float(AI_CONFIG.get("timeout_seconds"), 30))),
-            max_tokens=max(100, int(max_output_tokens)),
+            max_completion_tokens=max(100, int(max_output_tokens)),
+            reasoning_effort="minimal",
+            verbosity="low",
             model_kwargs={"response_format": {"type": "json_object"}},
         )
         msg = llm.invoke(
